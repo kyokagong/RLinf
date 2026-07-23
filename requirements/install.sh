@@ -81,7 +81,7 @@ NO_ROOT=0
 NO_INSTALL_RLINF_CMD="--no-install-project"
 SUPPORTED_TARGETS=("embodied" "agentic" "docs")
 SUPPORTED_MODELS=("openvla" "openvla-oft" "openpi" "gr00t" "gr00t_n1d6" "gr00t_n1d7" "dexbotic" "starvla" "lingbotvla" "dreamzero" "qwen3_vl" "abot_m0")
-SUPPORTED_ENVS=("behavior" "maniskill_libero" "libero" "metaworld" "calvin" "isaaclab" "robocasa" "franka" "franka-dexhand" "franka-franky" "frankasim" "robotwin" "habitat" "opensora" "wan" "genesis" "xsquare_turtle2" "liberopro" "liberoplus" "roboverse" "embodichain" "d4rl" "dosw1" "gim_arm" "dummy" "polaris")
+SUPPORTED_ENVS=("behavior" "maniskill_libero" "libero" "metaworld" "calvin" "isaaclab" "berkeley_humanoid" "robocasa" "franka" "franka-dexhand" "franka-franky" "frankasim" "robotwin" "habitat" "opensora" "wan" "genesis" "xsquare_turtle2" "liberopro" "liberoplus" "roboverse" "embodichain" "d4rl" "dosw1" "gim_arm" "dummy" "polaris")
 
 #=======================Utility Functions=======================
 
@@ -1695,6 +1695,10 @@ install_env_only() {
         polaris)
             install_polaris_env
             ;;
+        berkeley_humanoid)
+            install_common_embodied_deps
+            install_berkeley_humanoid_env
+            ;;
         *)
             echo "Environment '$ENV_NAME' is not supported for env-only installation." >&2
             exit 1
@@ -1883,6 +1887,16 @@ install_isaaclab_env() {
 
     $isaaclab_dir/isaaclab.sh --install
     popd >/dev/null
+}
+
+install_berkeley_humanoid_env() {
+    install_isaaclab_env
+
+    local berkeley_dir
+    berkeley_dir=$(clone_or_reuse_repo BERKELEY_HUMANOID_LITE_PATH "$VENV_DIR/berkeley-humanoid-lite" https://github.com/HybridRobotics/Berkeley-Humanoid-Lite.git --recurse-submodules)
+
+    uv pip install -e "$berkeley_dir/source/berkeley_humanoid_lite_assets"
+    uv pip install -e "$berkeley_dir/source/berkeley_humanoid_lite"
 }
 
 install_robocasa_env() {
