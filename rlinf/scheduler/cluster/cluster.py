@@ -27,14 +27,14 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import ray
 import ray.util.scheduling_strategies
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from packaging import version as vs
 from ray._private import ray_logging
 from ray.actor import ActorHandle
 from ray.util.state import list_actors
 
 from ..hardware.accelerators.accelerator import ProfileConfig
-from .config import ClusterConfig
+from .config import ClusterConfig, CollectiveConfig
 from .node import NodeGroupInfo, NodeInfo, NodeProbe
 from .utils import DistributedRayLogCollector, without_http_proxies
 
@@ -77,6 +77,13 @@ class ClusterEnvVar(str, Enum):
         export RLINF_EXT_MODULE=rlinf_ext
         # or with full path:
         export RLINF_EXT_MODULE=workflows.scripts.rlinf_ext
+    """
+
+    NET_EMULATION = "NET_EMULATION"
+    """Whether ``cluster.net_emulation`` is enabled for this run.
+
+    Set to ``1`` by the driver when the net emulation manager is launched, so that
+    workers know to wait for it instead of silently sending undelayed.
     """
 
     PATH_ENV_MERGE_MODE = "PATH_ENV_MERGE_MODE"
@@ -126,6 +133,7 @@ class Cluster:
         ClusterEnvVar.NODE_RANK: None,
         ClusterEnvVar.COMM_NET_DEVICES: None,
         ClusterEnvVar.EXT_MODULE: None,
+        ClusterEnvVar.NET_EMULATION: "0",
         ClusterEnvVar.PATH_ENV_MERGE_MODE: PathEnvMergeMode.APPEND.value,
         ClusterEnvVar.CODE_WORKING_DIR: "0",
     }
@@ -388,6 +396,17 @@ class Cluster:
             + "\n".join(str(group) for group in self._node_groups)
         )
 
+        # Resolve net emulation before the env vars are pushed to the nodes, so that
+        # workers can tell an unlaunched manager from a disabled one.
+        net_emu_cfg = cluster_cfg.get("net_emulation", None) if cluster_cfg else None
+        if net_emu_cfg is not None and net_emu_cfg.get("enabled", False):
+            # Resolve to a plain dict so the actor does not need the config schema.
+            if isinstance(net_emu_cfg, DictConfig):
+                net_emu_cfg = OmegaConf.to_container(net_emu_cfg, resolve=True)
+            os.environ[Cluster.get_full_env_var_name(ClusterEnvVar.NET_EMULATION)] = "1"
+        else:
+            net_emu_cfg = None
+
         # Set environment variables
         self._set_scheduler_env_vars()
 
@@ -396,6 +415,7 @@ class Cluster:
             CollectiveManager,
             DeviceLockManager,
             Manager,
+            NetEmulationManager,
             NodeManager,
             PortLockManager,
             Tracer,
@@ -430,6 +450,11 @@ class Cluster:
             if tracer_cfg is not None and tracer_cfg.get("enable", False):
                 self._tracer = self._launch_manager_actor(
                     Tracer, manager_node, runtime_env, tracer_cfg.get("output_file")
+                )
+            # Optional net emulation manager, launched only when emulation is enabled
+            if net_emu_cfg is not None:
+                self._net_emulation_manager = self._launch_manager_actor(
+                    NetEmulationManager, manager_node, runtime_env, net_emu_cfg
                 )
         except ValueError:
             raise Cluster.NamespaceConflictError
@@ -532,6 +557,16 @@ class Cluster:
     def num_nodes(self):
         """Get the number of nodes in the cluster."""
         return self._num_nodes
+
+    @property
+    def collective_config(self) -> Optional["CollectiveConfig"]:
+        """Get the job-wide collective configuration, if one was provided.
+
+        The configuration is validated once on the driver and reaches every
+        Worker with the rest of the :class:`ClusterConfig`, so both ends of a
+        collective agree on it by construction.
+        """
+        return self._cluster_cfg.collective if self._cluster_cfg is not None else None
 
     @property
     def num_accelerators(self):
@@ -639,10 +674,7 @@ class Cluster:
 
         if profiling_cfg.output_dir is None:
             output_dir = tempfile.gettempdir()
-
-            from rlinf.utils.logging import get_logger
-
-            get_logger().warning(
+            logging.getLogger(cls.SYS_NAME).warning(
                 f"Profiling is enabled for worker group '{worker_group_name}' but no "
                 f"output directory is configured. Reports will be saved to: {output_dir}."
             )
@@ -800,13 +832,18 @@ class Cluster:
                 merged_env_vars,
                 self._runtime_code_sync_strip_roots,
             )
+        runtime_env_vars = {
+            key: value
+            for key, value in merged_env_vars.items()
+            if node.default_env_vars.get(key) != value
+        }
         runtime_env_worker = Cluster._combine_ray_runtime_env(
             Cluster._job_code_sync_fragment_for_child_runtime_env(
                 self._ray_code_sync_fragment
             ),
             {
                 "py_executable": python_interpreter_path,
-                "env_vars": merged_env_vars,
+                "env_vars": runtime_env_vars,
             },
         )
 

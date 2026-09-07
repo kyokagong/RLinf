@@ -75,6 +75,21 @@ gym_new_venv_step_type = tuple[
 ]
 warnings.simplefilter("once", DeprecationWarning)
 
+LIBERO_CAMERA_OBS_NAMES = ("agentview_image", "robot0_eye_in_hand_image")
+
+
+def _set_camera_rendering(env, enabled: bool) -> None:
+    """Enable or disable LIBERO camera observables without resetting the env."""
+    rob = getattr(env, "env", env)
+    while hasattr(rob, "env"):
+        rob = rob.env
+    observables = getattr(rob, "_observables", None)
+    if observables is None:
+        return
+    for name in LIBERO_CAMERA_OBS_NAMES:
+        if name in observables:
+            observables[name]._enabled = enabled
+
 
 def _worker(
     parent: connection.Connection,
@@ -159,6 +174,56 @@ def _worker(
                 env = OffScreenRenderEnv(**data)
                 env.seed(seed)
                 p.send(None)
+            elif cmd == "get_camera_meta":
+                # Compute camera intrinsics/extrinsics and depth near/far
+                # from the robosuite sim, which is only reachable inside the
+                # worker subprocess.  Returns picklable lists/floats so the
+                # driver can back-project pixels to world without GT poses.
+                from robosuite.utils import camera_utils
+
+                rob = getattr(env, "env", env)
+                while hasattr(rob, "env"):
+                    rob = rob.env
+                sim = rob.sim
+                cam = data.get("camera_name", "agentview")
+                h = int(data.get("height", 256))
+                w = int(data.get("width", 256))
+                K = camera_utils.get_camera_intrinsic_matrix(sim, cam, h, w)
+                E = camera_utils.get_camera_extrinsic_matrix(sim, cam)
+                extent = float(sim.model.stat.extent)
+                near = float(sim.model.vis.map.znear) * extent
+                far = float(sim.model.vis.map.zfar) * extent
+                p.send(
+                    {
+                        "camera_name": cam,
+                        "height": h,
+                        "width": w,
+                        "intrinsic_K": K.tolist(),
+                        "extrinsic_cam2world": E.tolist(),
+                        "depth_near": near,
+                        "depth_far": far,
+                    }
+                )
+            elif cmd == "render_camera":
+                rob = getattr(env, "env", env)
+                while hasattr(rob, "env"):
+                    rob = rob.env
+                sim = rob.sim
+                cam = data.get("camera_name", "agentview")
+                h = int(data.get("height", 1024))
+                w = int(data.get("width", 1024))
+                depth = bool(data.get("depth", False))
+                p.send(
+                    sim.render(
+                        width=w,
+                        height=h,
+                        camera_name=cam,
+                        depth=depth,
+                    )
+                )
+            elif cmd == "set_camera_rendering":
+                _set_camera_rendering(env, data)
+                p.send(None)
             else:
                 p.close()
                 raise NotImplementedError
@@ -209,3 +274,13 @@ class ReconfigureSubprocEnv(SubprocVectorEnv):
 
         for j, i in enumerate(id):
             self.workers[i].reconfigure_env_fn(env_fns[j])
+
+    def set_camera_rendering(self, enabled: bool, id=None):
+        self._assert_is_not_closed()
+        id = self._wrap_id(id)
+        if self.is_async:
+            self._assert_id(id)
+        for i in id:
+            self.workers[i].parent_remote.send(["set_camera_rendering", enabled])
+        for i in id:
+            self.workers[i].parent_remote.recv()

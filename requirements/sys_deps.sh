@@ -125,12 +125,14 @@ install_deps_apt() {
         libgomp1 \
         libexpat1 \
         libfontconfig1-dev \
+        liblz4-dev \
         libpython3-stdlib \
         imagemagick \
         libmagickwand-dev \
         libvulkan1 \
         vulkan-tools \
         libnuma1 \
+        libzstd-dev \
         mesa-vulkan-drivers || {
             echo "apt-get install failed. Please check your repositories or install dependencies manually." >&2
             exit 1
@@ -178,8 +180,10 @@ install_deps_dnf() {
         libgomp \
         expat \
         fontconfig \
+        lz4-devel \
         python3-devel \
         numactl-libs-devel \
+        libzstd-devel \
         ImageMagick-devel || {
             echo "dnf install failed. Please check your repositories or install dependencies manually." >&2
             exit 1
@@ -224,8 +228,10 @@ install_deps_yum() {
         libgomp \
         expat \
         fontconfig \
+        lz4-devel \
         python3-devel \
         numactl-libs-devel \
+        libzstd-devel \
         ImageMagick-devel || {
             echo "yum install failed. Please check your repositories or install dependencies manually." >&2
             exit 1
@@ -266,7 +272,9 @@ install_deps_pacman() {
         libgomp \
         expat \
         fontconfig \
+        lz4 \
         numactl \
+        zstd \
         imagemagick || {
             echo "pacman install failed. Please check your repositories or install dependencies manually." >&2
             exit 1
@@ -371,11 +379,10 @@ case "$PLATFORM" in
         echo "Installing rendering runtime config for AMD/Radeon"
         install_render_config_amd
         ;;
-    ascend)
-        # Ascend NPU systems are server-side and typically have no display
-        # GPU. Skip the EGL/Vulkan ICD config — embodied targets that need
-        # software rendering still get mesa drivers from the apt step.
-        echo "Skipping rendering runtime config on Ascend platform"
+    ascend|musa)
+        # Server-side, with no display GPU. Skip the EGL/Vulkan ICD config;
+        # software rendering still gets mesa drivers from the step above.
+        echo "Skipping rendering runtime config on ${PLATFORM} platform"
         ;;
     nvidia|*)
         echo "Installing rendering runtime config for NVIDIA"

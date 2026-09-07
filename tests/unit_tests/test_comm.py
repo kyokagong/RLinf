@@ -14,13 +14,18 @@
 
 import asyncio
 import gc
+import logging
 import os
 import threading
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.distributed as dist
+from omegaconf import OmegaConf
+from torch.distributed import distributed_c10d
 
 from rlinf.scheduler import (
     Cluster,
@@ -30,6 +35,8 @@ from rlinf.scheduler import (
     Worker,
     WorkerAddress,
 )
+from rlinf.scheduler.collective.collective_group import CollectiveGroup
+from rlinf.scheduler.collective.multi_channel_pg import MultiChannelProcessGroup
 
 SENDER_GROUP_NAME = "sender_worker_group"
 RECEIVER_GROUP_NAME = "receiver_worker_group"
@@ -194,6 +201,23 @@ class SenderWorker(Worker):
         device = "cpu" if on_cpu else get_device()
         tensor_list = [torch.ones(2, 2, device=device) * i for i in range(4)]
         return self._send_data(tensor_list, async_op)
+
+    def test_send_compressed_data(self, container, async_op=False):
+        """Send a compressible CPU tensor in a supported container."""
+        tensor = torch.zeros(256 * 1024, dtype=torch.uint8)
+        if container == "tensor":
+            data = tensor
+        elif container == "list":
+            data = [tensor, torch.arange(64, dtype=torch.int64)]
+        elif container == "tuple":
+            data = (tensor, torch.arange(64, dtype=torch.int64))
+        elif container == "dict":
+            data = {"compressed": tensor, "raw": torch.arange(64)}
+        elif container == "dataclass":
+            data = TensorMessage(id=self._rank, payload=tensor, note="compressed")
+        else:
+            raise ValueError(f"Unsupported compressed container: {container}")
+        return self._send_data(data, async_op)
 
     def test_send_tensor_dict(self, on_cpu, async_op=False):
         device = "cpu" if on_cpu else get_device()
@@ -597,6 +621,10 @@ class ReceiverWorker(Worker):
     def test_recv_tensor_list(self, async_op=False):
         return self._recv_data(async_op)
 
+    def test_recv_compressed_data(self, async_op=False):
+        """Receive data using the collective compression config."""
+        return self._recv_data(async_op)
+
     def test_recv_tensor_dict(self, async_op=False):
         return self._recv_data(async_op)
 
@@ -956,7 +984,22 @@ class CommCollectiveWorker(Worker):
 @pytest.fixture(scope="module")
 def cluster():
     """Provides a ClusterResource instance for the tests."""
-    return Cluster(num_nodes=1)
+    return Cluster(
+        cluster_cfg=OmegaConf.create(
+            {
+                "num_nodes": 1,
+                "component_placement": [],
+                "collective": {
+                    "tensor_compression": {
+                        "enabled": True,
+                        "codec": "lz4",
+                        "min_bytes": 1024,
+                        "acceleration": 1,
+                    }
+                },
+            }
+        )
+    )
 
 
 @pytest.fixture(scope="class")
@@ -1146,6 +1189,39 @@ class TestCommunication:
             for i, tensor in enumerate(res_list):
                 expected = torch.ones(2, 2) * i
                 assert torch.equal(tensor.cpu(), expected)
+
+    @pytest.mark.parametrize(
+        "container", ["tensor", "list", "tuple", "dict", "dataclass"]
+    )
+    @pytest.mark.parametrize("async_op", [False, True], ids=["sync", "async_wait"])
+    def test_compressed_cpu_tensor_communication(
+        self, worker_groups, container, async_op
+    ):
+        """Compressed CPU tensors preserve values on supported container paths."""
+        results = self._run_test(
+            worker_groups,
+            "test_send_compressed_data",
+            "test_recv_compressed_data",
+            (container, async_op),
+            (async_op,),
+        )
+        expected = torch.zeros(256 * 1024, dtype=torch.uint8)
+        for result in results:
+            if container == "tensor":
+                tensor = result
+            elif container in {"list", "tuple"}:
+                # Tuple inputs use the established tensor-list wire path.
+                assert isinstance(result, list)
+                tensor = result[0]
+                assert torch.equal(result[1], torch.arange(64, dtype=torch.int64))
+            elif container == "dict":
+                tensor = result["compressed"]
+                assert torch.equal(result["raw"], torch.arange(64))
+            else:
+                assert isinstance(result, TensorMessage)
+                assert result.note == "compressed"
+                tensor = result.payload
+            assert torch.equal(tensor, expected)
 
     @pytest.mark.parametrize("async_op", [False, True], ids=["sync", "async_wait"])
     def test_mixed_tensor_list_communication(self, worker_groups, async_op):
@@ -1930,6 +2006,113 @@ class TestCollective:
         expected = torch.ones(3, 3) * 9
         for res in results:
             assert torch.equal(res.cpu(), expected)
+
+
+class _BroadcastFailureGroup:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def broadcast(self, tensors: list[torch.Tensor], options: object) -> None:
+        del tensors, options
+        raise self._error
+
+    def __repr__(self) -> str:
+        return "_BroadcastFailureGroup()"
+
+
+class _WaitFailureWork:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def wait(self) -> None:
+        raise self._error
+
+
+class _WaitFailureGroup:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def broadcast(
+        self, tensors: list[torch.Tensor], options: object
+    ) -> _WaitFailureWork:
+        del tensors, options
+        return _WaitFailureWork(self._error)
+
+    def __repr__(self) -> str:
+        return "_WaitFailureGroup()"
+
+
+@pytest.fixture
+def multi_channel_group(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> MultiChannelProcessGroup:
+    monkeypatch.setattr(distributed_c10d, "BroadcastOptions", SimpleNamespace)
+    monkeypatch.setattr(
+        distributed_c10d, "_check_single_tensor", lambda tensor, name: None
+    )
+    monkeypatch.setattr(distributed_c10d, "_rank_not_in_group", lambda group: False)
+    monkeypatch.setattr(distributed_c10d, "get_group_rank", lambda group, rank: rank)
+    monkeypatch.setattr(dist, "_get_process_group_name", lambda group: "test-group")
+
+    logger = logging.getLogger(__name__)
+    caplog.set_level(logging.ERROR, logger=logger.name)
+    process_group = object.__new__(MultiChannelProcessGroup)
+    process_group._cur_rank = 1
+    process_group._peer_rank = 0
+    process_group._num_channels = 1
+    process_group._is_initialized = True
+    process_group._no_accel_ccl = False
+    process_group._logger = logger
+    return process_group
+
+
+class TestMultiChannelProcessGroupFailures:
+    """Tests that broadcast failures propagate out of the receive path."""
+
+    @staticmethod
+    def _assert_failure_log(
+        caplog: pytest.LogCaptureFixture, expected_error: str
+    ) -> None:
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert "ProcessGroup test-group rank 1" in message
+        assert expected_error in message
+
+    def test_recv_propagates_process_group_failure(
+        self,
+        multi_channel_group: MultiChannelProcessGroup,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        error = RuntimeError("connection closed by peer")
+        multi_channel_group._recv_gloo_process_groups = [_BroadcastFailureGroup(error)]
+
+        with pytest.raises(RuntimeError) as exc_info:
+            multi_channel_group.recv(
+                torch.empty(1),
+                device=CollectiveGroup.CPU,
+                channel_id=0,
+            )
+
+        assert exc_info.value is error
+        self._assert_failure_log(caplog, str(error))
+
+    def test_recv_propagates_synchronous_wait_failure(
+        self,
+        multi_channel_group: MultiChannelProcessGroup,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        error = RuntimeError("timed out waiting for recv")
+        multi_channel_group._recv_gloo_process_groups = [_WaitFailureGroup(error)]
+
+        with pytest.raises(RuntimeError) as exc_info:
+            multi_channel_group.recv(
+                torch.empty(1),
+                device=CollectiveGroup.CPU,
+                channel_id=0,
+            )
+
+        assert exc_info.value is error
+        self._assert_failure_log(caplog, str(error))
 
 
 if __name__ == "__main__":
