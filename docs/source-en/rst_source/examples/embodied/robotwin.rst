@@ -122,7 +122,7 @@ Installation
       rlinf/rlinf:agentic-rlinf0.4-robotwin
 
    # For mainland China users:
-   # docker.1ms.run/rlinf/rlinf:agentic-rlinf0.4-robotwin
+   # infinigence-ai-registry.cn-beijing.cr.aliyuncs.com/rlinf/rlinf:agentic-rlinf0.4-robotwin
 
 Switch to the matching virtual environment inside the image:
 
@@ -266,7 +266,7 @@ and result interpretation.
 
 .. note::
 
-   The provided configs use train/eval seed files under ``rlinf/envs/robotwin/seeds/``.
+   The provided configs use train/eval seed files under ``rlinf/envs/sim/robotwin/seeds/``.
 
 Visualization and Results
 -------------------------
