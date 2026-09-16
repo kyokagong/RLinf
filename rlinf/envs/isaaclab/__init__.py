@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .tasks.berkeley_humanoid import BerkeleyHumanoidEnv
 from .tasks.stack_cube import IsaaclabStackCubeEnv
 
 REGISTER_ISAACLAB_ENVS = {
     "Isaac-Stack-Cube-Franka-IK-Rel-Visuomotor-Rewarded-v0": IsaaclabStackCubeEnv,
+    "Velocity-Berkeley-Humanoid-Lite-v0": BerkeleyHumanoidEnv,
+    "Velocity-Berkeley-Humanoid-Lite-Biped-v0": BerkeleyHumanoidEnv,
 }
 
 __all__ = [list(REGISTER_ISAACLAB_ENVS.keys())]
