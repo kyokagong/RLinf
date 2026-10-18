@@ -36,7 +36,11 @@ from rlinf.envs.sim.libero.utils import (
     record_completed_episode_task_stats,
 )
 from rlinf.envs.sim.libero.venv import ReconfigureSubprocEnv
-from rlinf.envs.utils import list_of_dict_to_dict_of_list, to_tensor
+from rlinf.envs.utils import (
+    list_of_dict_to_dict_of_list,
+    to_tensor,
+    valid_action_mask_from_counts,
+)
 from rlinf.utils.logging import get_logger
 
 
@@ -842,7 +846,10 @@ class LiberoEnv(gym.Env):
             reset_state_ids = self._get_random_reset_state_ids(num_reset_states)
 
         self._reconfigure(reset_state_ids, env_idx)
-        for _ in range(15):
+        # Preserve LIBERO's existing 15-step settling behavior unless a model
+        # explicitly requests a different reset wait (FastWAM uses 30).
+        num_steps_wait = int(self.cfg.get("num_steps_wait", 15))
+        for _ in range(num_steps_wait):
             zero_actions = np.zeros((len(env_idx), 7))
             if self.cfg.reset_gripper_open:
                 zero_actions[:, -1] = -1
@@ -977,6 +984,20 @@ class LiberoEnv(gym.Env):
         past_terminations = raw_chunk_terminations.any(dim=1)
         past_truncations = raw_chunk_truncations.any(dim=1)
         past_dones = torch.logical_or(past_terminations, past_truncations)
+        raw_chunk_dones = torch.logical_or(
+            raw_chunk_terminations, raw_chunk_truncations
+        )
+        first_done_steps = raw_chunk_dones.to(torch.int64).argmax(dim=1) + 1
+        valid_action_counts = torch.where(
+            past_dones,
+            first_done_steps,
+            torch.full_like(first_done_steps, chunk_size),
+        )
+        # Include the ending action and exclude later slots. Terminations below
+        # are folded onto the last chunk index, so this mask is the prefix.
+        valid_action_mask = valid_action_mask_from_counts(
+            valid_action_counts, chunk_size
+        )
 
         # eval_count_mask: per-env bool, True if this completion counts toward eval metrics.
         eval_count_mask = None
@@ -1003,6 +1024,8 @@ class LiberoEnv(gym.Env):
         else:
             chunk_terminations = raw_chunk_terminations.clone()
             chunk_truncations = raw_chunk_truncations.clone()
+        if not self.is_eval:
+            infos_list[-1]["valid_action_mask"] = valid_action_mask
         return (
             obs_list,
             chunk_rewards,

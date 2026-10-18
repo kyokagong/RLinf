@@ -1,7 +1,7 @@
 真实机器人强化学习
 ========================================
 
-按机器人硬件选择配置与使用指南。Franka 机械臂及其组合设备请从 Franka 页面开始；GimArm、XSquare Turtle2、Dexmal DOS-W1、AgileX Piper 和 SO101 请进入对应页面。
+按机器人硬件选择配置与使用指南。Franka 机械臂及其组合设备请从 Franka 页面开始；YAM、GimArm、XSquare Turtle2、Dexmal DOS-W1、AgileX Piper 和 SO101 请进入对应页面。
 
 根据硬件检查、遥操作、数据采集、Sim-to-Real 迁移、部署或在线 RL 的需求，选择相应指南。
 
@@ -14,9 +14,9 @@
             style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" /></a>
        <p style="margin-top: 8px; font-size: 14px; line-height: 1.4;">
          <a href="embodied/franka_index.html" style="text-decoration: underline; color: blue;">
-           <b>Single-Arm Franka</b>
+           <b>单臂 Franka</b>
          </a><br>
-         进入 Single-Arm Franka 章节，查看基础真机 RL、reward model、ZED + Robotiq、GELLO、VR / PICO、双臂、灵巧手、Pi0 SFT 和 HG-DAgger
+         查看单臂 Franka 的真机强化学习、遥操作与数据采集、奖励模型、灵巧手、SFT 和部署指南
        </p>
      </div>
       <div style="flex: 1 1 30%; max-width: 300px; text-align: center;">
@@ -24,9 +24,9 @@
             style="width: 100%; height: 200px; object-fit: cover; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.15);" /></a>
        <p style="margin-top: 8px; font-size: 14px; line-height: 1.4;">
          <a href="embodied/dual_franka_index.html" style="text-decoration: underline; color: blue;">
-           <b>Dual-Arm Franka</b>
+           <b>双臂 Franka</b>
          </a><br>
-         进入 Dual-Arm Franka 章节，查看基础真机 RL、reward model、ZED + Robotiq、GELLO、VR / PICO、双臂、灵巧手、Pi0 SFT 和 HG-DAgger
+         查看双臂 Franka 的数据采集、SFT、部署与 PICO 辅助 HG-DAgger 指南
        </p>
      </div>
      <div style="flex: 1 1 30%; max-width: 300px; text-align: center;">
@@ -62,6 +62,11 @@
 
    </div>
 
+YAM
+---
+
+进入 :doc:`YAM 页面 <embodied/yam_index>`，查看双臂配置与数据采集指南。
+
 Piper 与 SO101 配置
 --------------------------------
 
@@ -86,8 +91,9 @@ Piper 与 SO101 配置
    :hidden:
    :maxdepth: 3
 
-   Single-Arm Franka <embodied/franka_index>
-   Dual-Arm Franka <embodied/dual_franka_index>
+   单臂 Franka <embodied/franka_index>
+   双臂 Franka <embodied/dual_franka_index>
+   YAM <embodied/yam_index>
    GimArm <embodied/gim_arm>
    XSquare Turtle2 <embodied/xsquare_turtle2>
    DOS-W1 <embodied/dosw1>

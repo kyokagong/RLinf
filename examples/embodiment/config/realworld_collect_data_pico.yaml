@@ -24,7 +24,7 @@ cluster:
           - robot_ip: ROBOT_IP    # Replace with your Franka IP
             node_rank: 0
             # "franka_ros" needs a ROS stack; "franky" talks libfranka.
-            backend: franka_ros
+            backend: franky
             camera_serials: ["CAMERA_SERIAL_1", "CAMERA_SERIAL_2"]
 
 runner:
@@ -63,8 +63,8 @@ env:
 
     data_collection:
       enabled: True
-      save_dir: ${runner.logger.log_path}/collected_data
-      export_format: "pickle"
+      save_dir: ${runner.logger.log_path}
+      export_format: [replay_buffer, pickle_episode]
       only_success: True
       robot_type: "panda"
       fps: 10
