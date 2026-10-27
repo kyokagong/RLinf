@@ -10,6 +10,7 @@
 <a href="https://deepwiki.com/RLinf/RLinf"><img src="https://img.shields.io/badge/Ask%20DeepWiki-1DA1F2?logo=databricks&logoColor=white&color=00ADEF" alt="Ask DeepWiki"></a>
 <a href="https://github.com/RLinf/misc/blob/main/pic/wechat.jpg?raw=true"><img src="https://img.shields.io/badge/WeChat%20Group-green?logo=wechat&amp"></a>
 <a href="https://github.com/RLinf/misc/blob/main/pic/slack.jpg?raw=true"><img src="https://badgen.net/badge/icon/Slack%20Channel?icon=slack&amp;label&amp;color=4A154B&amp;labelColor=4A154B" alt="Slack Channel"></a>
+<a href="https://github.com/RLinf/misc/blob/main/pic/discord.jpg?raw=true"><img src="https://img.shields.io/badge/Discord%20Community-5865F2?logo=discord&logoColor=white"></a>
 </div>
 
 <div align="center">
@@ -32,6 +33,8 @@ RLinf is a flexible and scalable open-source RL infrastructure designed for Embo
 
 ## What's NEW!
 
+- [2026/10] 🎉 RLinf v0.4 is released, taking RL out of simulation and into agile control of the physical world. Highlights: a modular real-robot system (`rlinf.robotics`), real-robot SOTA post-training algorithms (RLT, STEAM, OPD, RTC), full-modality models (native PyTorch OpenPI π₀ / π₀.₅, Cosmos3, FastWAM, π₀-FAST, Evo-1, MolmoAct2, SD3 / Wan2.2), and eight accelerator backends. Release notes: [RLinf v0.4](https://rlinf.readthedocs.io/en/latest/rst_source/resources/release_v0.4.html).
+- [2026/10] 🎉 RLinf introducing **CEL** (Collective Experience Learning): robot fleets improve a shared policy from their own deployment experience without additional expert demonstrations or corrective actions, validated on up to 96 real robots across 5 real-world tasks. Project page: [CEL](https://cel-robot-learning.github.io/), paper: [arXiv:2610.25736](https://arxiv.org/abs/2610.25736). Code will release soon.
 - [2026/10] 🔥 RLinf supports MetaX (MACA) GPUs. PR: [MetaX GPU support (#1656)](https://github.com/RLinf/RLinf/pull/1656).
 - [2026/09] 🔥 RLinf refactors real-world robots and environments, using a unified robotics interface to manage hardware, tasks, and rollout wrappers separately. Docs: [Robotics Interface](https://rlinf.readthedocs.io/en/latest/rst_source/concepts/robotics.html), [Robotics Architecture](https://rlinf.readthedocs.io/en/latest/rst_source/concepts/robotics_architecture.html), [Real-World Tasks and Environments](https://rlinf.readthedocs.io/en/latest/rst_source/concepts/realworld_envs.html), [Add a Robot](https://rlinf.readthedocs.io/en/latest/rst_source/extending/new_robot.html), [Add a Real-World Task](https://rlinf.readthedocs.io/en/latest/rst_source/extending/new_task.html), [Teleoperation](https://rlinf.readthedocs.io/en/latest/rst_source/guides/teleoperation.html).
 - [2026/09] 🔥 RLinf supports RL on π₀-FAST. Doc: [π₀-FAST](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/pi0_fast.html).
@@ -100,7 +103,7 @@ RLinf is a flexible and scalable open-source RL infrastructure designed for Embo
 - [2026/01] 🔥 RLinf supports reinforcement learning fine-tuning for [OpenSora World Model](https://github.com/hpcaitech/Open-Sora). Doc: [RL on OpenSora World Model](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/opensora.html).
 - [2026/01] 🔥 RLinf supports reinforcement learning fine-tuning for [RoboTwin](https://github.com/robotwin-Platform/RoboTwin). Doc: [RL on RoboTwin](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/robotwin.html).
 - [2026/01] 🔥 RLinf supports SAC training for flow matching policy. Doc: [SAC-Flow](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/sac_flow.html), paper: [SAC Flow: Sample-Efficient Reinforcement Learning of Flow-Based Policies via Velocity-Reparameterized Sequential Modeling](https://arxiv.org/abs/2509.25756).
-- [2025/12] 🔥 RLinf supports agentic reinforcement learning on [Search-R1](https://github.com/PeterGriffinJin/Search-R1). Doc: [Search-R1](https://rlinf.readthedocs.io/en/latest/rst_source/examples/agentic/searchr1.html).
+- [2025/12] 🔥 RLinf supports agentic reinforcement learning on [Search-R1](https://github.com/PeterGriffinJin/Search-R1). Doc: [Search-R1](https://rlinf.readthedocs.io/en/latest/rst_source/examples/agentic/searchr1/index.html).
 - [2025/12] 🔥 RLinf v0.2-pre is open-sourced. We support real-world RL with Franka. Doc: [RL on Franka in the RealWorld](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/franka.html).
 - [2025/12] 🔥 RLinf supports reinforcement learning fine-tuning for [RoboCasa](https://github.com/robocasa/robocasa). Doc: [RL on Robocasa](https://rlinf.readthedocs.io/en/latest/rst_source/examples/embodied/robocasa.html).
 - [2025/12] 🎉 RLinf official release of [v0.1](https://github.com/RLinf/RLinf/releases/tag/v0.1).
@@ -327,7 +330,7 @@ Choose the model and environment combination you need, then follow the correspon
       <td>
         <ul style="margin-left: 0; padding-left: 16px;">
           <li>
-            <a href="https://rlinf.readthedocs.io/en/latest/rst_source/examples/agentic/searchr1.html">
+            <a href="https://rlinf.readthedocs.io/en/latest/rst_source/examples/agentic/searchr1/index.html">
               SearchR1
             </a> ✅
           </li>
