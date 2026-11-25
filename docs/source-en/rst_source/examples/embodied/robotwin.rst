@@ -1,5 +1,5 @@
-RL with RoboTwin Benchmark
-===========================
+RoboTwin RL
+===========
 
 .. |huggingface| image:: /_static/svg/hf-logo.svg
    :width: 16px
@@ -42,7 +42,7 @@ Fine-tune a VLA on RoboTwin 2.0; OpenVLA-OFT + GRPO lifts average task success b
    .. grid-item-card:: Hardware
       :text-align: center
 
-      1–2 nodes · 8–16 GPUs
+      NVIDIA CUDA · :ref:`AMD ROCm <robotwin-hardware>` (1–2 nodes · 8–16 GPUs)
 
 | **You'll do:** install → clone RoboTwin + assets → download an SFT model → launch ``run_embodiment.sh`` → watch ``env/success_once``.
 | **Prerequisites:** :doc:`Installation </rst_source/start/installation>` · RoboTwin repo and assets · an SFT checkpoint.
@@ -105,188 +105,258 @@ Observation and Action
    * - ``actions``
      - VLA-dependent continuous action chunks for ALOHA-style dual-arm control.
 
-Installation
-------------
+.. _robotwin-hardware:
+
+Setup and Run
+-------------
 
 .. include:: _setup_common.rst
 
-**Docker image**
+Select a model tab for NVIDIA CUDA, or switch to **AMD ROCm** for AMD GPUs.
 
-.. code:: bash
+.. tab-set::
 
-   docker run -it --rm --gpus all \
-      --shm-size 32g \
-      --network host \
-      --name rlinf \
-      -v .:/workspace/RLinf \
-      rlinf/rlinf:agentic-rlinf0.4-robotwin
+   .. tab-item:: OpenVLA-OFT
+      :sync: openvla-oft
 
-   # For mainland China users:
-   # infinigence-ai-registry.cn-beijing.cr.aliyuncs.com/rlinf/rlinf:agentic-rlinf0.4-robotwin
+      **1. Install**
 
-Switch to the matching virtual environment inside the image:
+      Install RLinf, clone the ``RLinf_support`` RoboTwin branch alongside it, and download RoboTwin assets:
 
-.. code:: bash
+      .. code-block:: bash
 
-   # OpenVLA-OFT
-   source switch_env openvla-oft
+         git clone https://github.com/RLinf/RLinf.git && cd RLinf
+         bash requirements/install.sh embodied --model openvla-oft --env robotwin && source .venv/bin/activate
+         git clone https://github.com/RoboTwin-Platform/RoboTwin.git -b RLinf_support ../RoboTwin
+         (cd ../RoboTwin && bash script/_download_assets.sh)
+         export ROBOTWIN_PATH="$(cd ../RoboTwin && pwd)"
+         export ROBOT_PLATFORM=ALOHA
 
-   # OpenPI π₀ / π₀.₅
-   # source switch_env openpi
+      **2. Download**
 
-   # Lingbot-VLA, if available in your image
-   # source switch_env lingbotvla
+      Download the OpenVLA-OFT SFT checkpoint (example: ``place_empty_cup``):
 
-**Custom environment**
+      .. code-block:: bash
 
-Install dependencies for the model you want to run:
+         hf download RLinf/RLinf-OpenVLAOFT-RoboTwin-SFT-place_empty_cup --local-dir ./RLinf-OpenVLAOFT-RoboTwin-SFT-place_empty_cup
 
-.. code:: bash
+      **3. Launch**
 
-   # Mainland China users can add --use-mirror.
+      Available configs under ``examples/embodiment/config/``:
 
-   # OpenVLA-OFT
-   bash requirements/install.sh embodied --model openvla-oft --env robotwin
+      .. list-table::
+         :header-rows: 1
+         :widths: 24 48 28
 
-   # OpenPI π₀ / π₀.₅
-   # bash requirements/install.sh embodied --model openpi --env robotwin
+         * - Recipe
+           - Config
+           - Command suffix
+         * - OpenVLA-OFT + GRPO
+           - ``examples/embodiment/config/robotwin_place_empty_cup_grpo_openvlaoft.yaml``
+           - ``robotwin_place_empty_cup_grpo_openvlaoft``
+         * - OpenVLA-OFT + PPO
+           - ``examples/embodiment/config/robotwin_place_empty_cup_ppo_openvlaoft.yaml``
+           - ``robotwin_place_empty_cup_ppo_openvlaoft``
 
-   # Lingbot-VLA
-   # bash requirements/install.sh embodied --model lingbotvla --env robotwin
+      Launch training with ``run_embodiment.sh``, overriding ``actor.model.model_path`` (rollout inherits it automatically) and ``env.train.assets_path`` / ``env.eval.assets_path`` (pointing to the ``RoboTwin`` directory, parent of ``assets/``) on the command line (or set the same keys in the selected YAML):
 
-   source .venv/bin/activate
+      .. code-block:: bash
 
-Clone RoboTwin and download its assets:
+         bash examples/embodiment/run_embodiment.sh robotwin_place_empty_cup_grpo_openvlaoft \
+           actor.model.model_path=./RLinf-OpenVLAOFT-RoboTwin-SFT-place_empty_cup \
+           env.train.assets_path=../RoboTwin \
+           env.eval.assets_path=../RoboTwin
 
-.. code:: bash
+   .. tab-item:: OpenPI
+      :sync: openpi
 
-   git clone https://github.com/RoboTwin-Platform/RoboTwin.git -b RLinf_support
-   cd RoboTwin
-   bash script/_download_assets.sh
+      **1. Install**
 
-   export PYTHONPATH=/path/to/RoboTwin:$PYTHONPATH
-   export ROBOT_PLATFORM=ALOHA
+      Install RLinf, clone the ``RLinf_support`` RoboTwin branch alongside it, and download RoboTwin assets:
 
-By default, this script downloads assets under ``/path/to/RoboTwin/assets/``.
-After the download completes, set ``env.train.assets_path`` and
-``env.eval.assets_path`` to ``/path/to/RoboTwin`` (the parent folder of ``assets/``).
+      .. code-block:: bash
 
-Download the Model
-------------------
+         git clone https://github.com/RLinf/RLinf.git && cd RLinf
+         bash requirements/install.sh embodied --model openpi --env robotwin && source .venv/bin/activate
+         git clone https://github.com/RoboTwin-Platform/RoboTwin.git -b RLinf_support ../RoboTwin
+         (cd ../RoboTwin && bash script/_download_assets.sh)
+         export ROBOTWIN_PATH="$(cd ../RoboTwin && pwd)"
 
-Download the SFT checkpoint that matches your config. Examples:
+      **2. Download**
 
-**OpenVLA-OFT**
+      Download the OpenPI π₀.₅ SFT checkpoint for ``adjust_bottle`` (for π₀, use ``RLinf/RLinf-Pi0-RoboTwin-SFT-adjust_bottle`` instead):
 
-.. code-block:: bash
+      .. code-block:: bash
 
-   cd /path/to/save/model
+         hf download RLinf/RLinf-Pi05-RoboTwin-SFT-adjust_bottle --local-dir ./RLinf-Pi05-RoboTwin-SFT-adjust_bottle
 
-   git lfs install
-   git clone https://huggingface.co/RLinf/RLinf-OpenVLAOFT-RoboTwin-SFT-place_empty_cup
+      **3. Launch**
 
-   # Or use huggingface-hub:
-   # export HF_ENDPOINT=https://hf-mirror.com
-   pip install huggingface-hub
-   hf download RLinf/RLinf-OpenVLAOFT-RoboTwin-SFT-place_empty_cup --local-dir RLinf-OpenVLAOFT-RoboTwin-SFT-place_empty_cup
+      Available configs under ``examples/embodiment/config/``:
 
-**OpenPI π₀ / π₀.₅**
+      .. list-table::
+         :header-rows: 1
+         :widths: 24 48 28
 
-.. code-block:: bash
+         * - Recipe
+           - Config
+           - Command suffix
+         * - π₀ + PPO
+           - ``examples/embodiment/config/robotwin_adjust_bottle_ppo_openpi.yaml``
+           - ``robotwin_adjust_bottle_ppo_openpi``
+         * - π₀.₅ + PPO
+           - ``examples/embodiment/config/robotwin_adjust_bottle_ppo_openpi_pi05.yaml``
+           - ``robotwin_adjust_bottle_ppo_openpi_pi05``
+         * - OpenPI + DAgger
+           - ``examples/embodiment/config/robotwin_adjust_bottle_dagger_openpi.yaml``
+           - ``robotwin_adjust_bottle_dagger_openpi``
 
-   cd /path/to/save/model
+      Set ``actor.model.model_path`` (rollout inherits it automatically) and point ``env.train.assets_path`` / ``env.eval.assets_path`` to the ``RoboTwin`` directory:
 
-   git lfs install
-   git clone https://huggingface.co/RLinf/RLinf-Pi0-RoboTwin-SFT-adjust_bottle
-   git clone https://huggingface.co/RLinf/RLinf-Pi05-RoboTwin-SFT-adjust_bottle
+      .. code-block:: yaml
 
-   # Or use huggingface-hub:
-   # export HF_ENDPOINT=https://hf-mirror.com
-   pip install huggingface-hub
-   hf download RLinf/RLinf-Pi0-RoboTwin-SFT-adjust_bottle --local-dir RLinf-Pi0-RoboTwin-SFT-adjust_bottle
-   hf download RLinf/RLinf-Pi05-RoboTwin-SFT-adjust_bottle --local-dir RLinf-Pi05-RoboTwin-SFT-adjust_bottle
+         actor:
+           model:
+             model_path: ./RLinf-Pi05-RoboTwin-SFT-adjust_bottle
+         env:
+           train:
+             assets_path: ../RoboTwin
+           eval:
+             assets_path: ../RoboTwin
 
-.. include:: _model_path.rst
+      Launch training with ``run_embodiment.sh``:
 
-For Lingbot-VLA recipes, point ``actor.model.model_path`` and
-``rollout.model.model_path`` at your Lingbot-VLA SFT checkpoint.
+      .. code-block:: bash
 
-.. note::
+         bash examples/embodiment/run_embodiment.sh robotwin_adjust_bottle_ppo_openpi_pi05
 
-   The action-normalization key ``unnorm_key`` in the config (e.g.
-   ``unnorm_key: "place_empty_cup"``) must match the ``unnorm_key`` used when the SFT
-   checkpoint was trained, otherwise actions will be denormalized incorrectly.
+   .. tab-item:: LingBotVLA
+      :sync: lingbotvla
 
-Run It
-------
+      **1. Install**
 
-Pick one recipe and launch training:
+      Install RLinf, clone the ``RLinf_support`` RoboTwin branch alongside it, and download RoboTwin assets:
 
-.. list-table::
-   :header-rows: 1
-   :widths: 24 48 28
+      .. code-block:: bash
 
-   * - Recipe
-     - Config
-     - Command suffix
-   * - OpenVLA-OFT + GRPO
-     - ``examples/embodiment/config/robotwin_place_empty_cup_grpo_openvlaoft.yaml``
-     - ``robotwin_place_empty_cup_grpo_openvlaoft``
-   * - OpenVLA-OFT + PPO
-     - ``examples/embodiment/config/robotwin_place_empty_cup_ppo_openvlaoft.yaml``
-     - ``robotwin_place_empty_cup_ppo_openvlaoft``
-   * - π₀ + PPO
-     - ``examples/embodiment/config/robotwin_adjust_bottle_ppo_openpi.yaml``
-     - ``robotwin_adjust_bottle_ppo_openpi``
-   * - π₀.₅ + PPO
-     - ``examples/embodiment/config/robotwin_adjust_bottle_ppo_openpi_pi05.yaml``
-     - ``robotwin_adjust_bottle_ppo_openpi_pi05``
-   * - OpenPI + DAgger
-     - ``examples/embodiment/config/robotwin_adjust_bottle_dagger_openpi.yaml``
-     - ``robotwin_adjust_bottle_dagger_openpi``
-   * - Lingbot-VLA + GRPO
-     - ``examples/embodiment/config/robotwin_click_bell_grpo_lingbotvla.yaml``
-     - ``robotwin_click_bell_grpo_lingbotvla``
+         git clone https://github.com/RLinf/RLinf.git && cd RLinf
+         bash requirements/install.sh embodied --model lingbotvla --env robotwin && source .venv/bin/activate
+         git clone https://github.com/RoboTwin-Platform/RoboTwin.git -b RLinf_support ../RoboTwin
+         (cd ../RoboTwin && bash script/_download_assets.sh)
+         export ROBOTWIN_PATH="$(cd ../RoboTwin && pwd)"
 
-.. code:: bash
+      **2. Download**
 
-   bash examples/embodiment/run_embodiment.sh robotwin_place_empty_cup_grpo_openvlaoft
-   bash examples/embodiment/run_embodiment.sh robotwin_adjust_bottle_ppo_openpi_pi05
+      Prepare your Lingbot-VLA SFT checkpoint locally (for example under ``./LingBotVLA-RoboTwin-SFT``).
 
-What this does:
+      **3. Launch**
 
-1. Starts the embodied training entrypoint with the selected RoboTwin Hydra config.
-2. Creates Ray workers for actor, rollout, and RoboTwin env components.
-3. Runs rollouts, computes task rewards, and updates the selected VLA policy.
+      Available config under ``examples/embodiment/config/``:
 
-Run standalone evaluation through the :doc:`RoboTwin evaluation guide <../../evaluations/guides/robotwin>`.
-It owns ``ROBOTWIN_PATH`` / ``assets_path`` setup, available eval configs such as
-``robotwin_place_empty_cup_openvlaoft_eval`` and ``robotwin_adjust_bottle_openpi_pi05_eval``,
-and result interpretation.
+      .. list-table::
+         :header-rows: 1
+         :widths: 24 48 28
 
-.. note::
+         * - Recipe
+           - Config
+           - Command suffix
+         * - Lingbot-VLA + GRPO
+           - ``examples/embodiment/config/robotwin_click_bell_grpo_lingbotvla.yaml``
+           - ``robotwin_click_bell_grpo_lingbotvla``
 
-   The provided configs use train/eval seed files under ``rlinf/envs/sim/robotwin/seeds/``.
+      Set ``actor.model.model_path`` to your Lingbot-VLA SFT checkpoint (rollout inherits it automatically) and point ``env.train.assets_path`` / ``env.eval.assets_path`` to the ``RoboTwin`` directory:
+
+      .. code-block:: yaml
+
+         actor:
+           model:
+             model_path: ./LingBotVLA-RoboTwin-SFT
+         env:
+           train:
+             assets_path: ../RoboTwin
+           eval:
+             assets_path: ../RoboTwin
+
+      Launch training with ``run_embodiment.sh``:
+
+      .. code-block:: bash
+
+         bash examples/embodiment/run_embodiment.sh robotwin_click_bell_grpo_lingbotvla
+
+   .. tab-item:: AMD ROCm
+      :sync: rocm
+
+      RoboTwin installs on AMD ROCm with one change to the task config: ``planner_backend: mplib``.
+
+      **1. Install**
+
+      Install on a host with ROCm available, then clone the ``RLinf_support`` RoboTwin branch and download assets (omit ``--rocm`` to detect the installed version, and replace ``--model`` with ``openvla-oft`` or ``lingbotvla`` if needed):
+
+      .. code-block:: bash
+
+         git clone https://github.com/RLinf/RLinf.git && cd RLinf
+         bash requirements/install.sh --platform amd --rocm 6.4 embodied --model openpi --env robotwin && source .venv/bin/activate
+         git clone https://github.com/RoboTwin-Platform/RoboTwin.git -b RLinf_support ../RoboTwin
+         (cd ../RoboTwin && bash script/_download_assets.sh)
+         export ROBOTWIN_PATH="$(cd ../RoboTwin && pwd)"
+
+      .. dropdown:: Build and run the ROCm Docker image (optional)
+
+         To build the ROCm RoboTwin image from your checkout, run this command on the host with ``ROCM_ARCHS`` set to the ``gfx`` architecture of your GPUs (``gfx1100`` for the Radeon PRO W7900):
+
+         .. code-block:: bash
+
+            DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile \
+               --build-arg PLATFORM=amd \
+               --build-arg ROCM_VER=7.2 \
+               --build-arg ROCM_ARCHS=gfx1100 \
+               --build-arg BUILD_TARGET=embodied-robotwin \
+               -t rlinf:embodied-robotwin-rocm7.2 .
+
+         Start the container with the AMD kernel and render devices:
+
+         .. code-block:: bash
+
+            docker run -it --rm \
+               --device=/dev/kfd --device=/dev/dri --group-add video \
+               --ipc=host --shm-size 32g --network host \
+               -v "$PWD":/workspace/RLinf -w /workspace/RLinf \
+               rlinf:embodied-robotwin-rocm7.2 bash
+
+         .. warning::
+
+            Match ``ROCM_ARCHS`` to the target GPUs. During Docker builds the devices may be invisible, so extensions such as ``flash-attn`` need explicit architecture values. On GPUs other than ``gfx90a`` and ``gfx942``, the installer also switches ``flash-attn`` to its Triton backend.
+
+      **2. Download**
+
+      Download the matching SFT checkpoint (example: OpenPI π₀.₅ on ``adjust_bottle``):
+
+      .. code-block:: bash
+
+         hf download RLinf/RLinf-Pi05-RoboTwin-SFT-adjust_bottle --local-dir ./RLinf-Pi05-RoboTwin-SFT-adjust_bottle
+
+      **3. Launch**
+
+      ``pytorch3d``, ``warp-lang``, and ``curobo`` are CUDA-only, so the installer skips them. They exist for the ``curobo`` motion planner, which means RoboTwin needs the other planner: set ``planner_backend: mplib`` in the task config (the ``curobo`` default fails while the environment is being constructed). Set ``actor.model.model_path`` and ``assets_path`` in ``examples/embodiment/config/robotwin_adjust_bottle_ppo_openpi_pi05.yaml``, then launch with the same command:
+
+      .. code-block:: bash
+
+         bash examples/embodiment/run_embodiment.sh robotwin_adjust_bottle_ppo_openpi_pi05
+
+.. dropdown:: Advanced configuration (optional)
+
+   - **Camera near plane (``camera_near``):** RLinf creates RoboTwin's cameras with a 0.01 m near plane instead of RoboTwin's 0.1 m: SAPIEN 3.0.1 clips everything closer than the near plane, and 0.1 m hides the gripper fingers from the wrist cameras. Set ``camera_near: null`` in the RoboTwin env config to keep RoboTwin's own value.
+
+   - **Action normalization (``unnorm_key``):** ``unnorm_key`` in the config (e.g. ``unnorm_key: "place_empty_cup"``) must match the key used when the SFT checkpoint was trained, otherwise actions are denormalized incorrectly.
+
+   - **Seed files:** The provided configs use RLinf's bundled RoboTwin train/eval seed files.
+
+   - **Standalone evaluation:** Run standalone evaluation through the :doc:`RoboTwin evaluation guide <../../evaluations/guides/robotwin>`, which covers ``ROBOTWIN_PATH`` / ``assets_path`` setup, eval configs such as ``robotwin_place_empty_cup_openvlaoft_eval`` and ``robotwin_adjust_bottle_openpi_pi05_eval``, and result interpretation.
 
 Visualization and Results
 -------------------------
 
-Launch TensorBoard from the RLinf repo root:
-
-.. code:: bash
-
-   tensorboard --logdir ../results --port 6006
-
-The key signal is ``env/success_once``. For every logged metric, see
-:doc:`Training metrics <../../reference/metrics>`.
-
-Videos are saved through the env video config:
-
-.. code:: yaml
-
-   video_cfg:
-     save_video: True
-     video_base_dir: ${runner.logger.log_path}/video/eval
+Watch ``env/success_once`` in TensorBoard (``tensorboard --logdir ./logs``); set ``env.eval.video_cfg.save_video=True`` to record videos, or see :doc:`Training metrics <../../reference/metrics>` for W&B/SwanLab and all metrics.
 
 .. list-table:: OpenVLA-OFT evaluation results on seven RoboTwin tasks
    :header-rows: 1

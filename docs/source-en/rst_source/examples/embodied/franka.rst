@@ -1,663 +1,512 @@
-Real-World RL
-=============
-
-.. |huggingface| image:: /_static/svg/hf-logo.svg
-   :width: 16px
-   :height: 16px
-   :class: inline-icon
+Franka Online RL
+================
 
 .. figure:: https://raw.githubusercontent.com/RLinf/misc/main/pic/franka_arm_small.jpg
    :align: center
    :width: 80%
+   :alt: Franka arm used for real-world reinforcement learning
 
-   Franka Emika Panda arm used for the base RLinf real-world RL workflow.
-
-Use RLinf to train and evaluate real-world policies on a Franka Emika Panda arm. You'll set up the controller and training nodes, collect demonstrations, run SAC/RLPD or PPO-style training, and monitor safe online updates on physical hardware.
+   Franka arm used for real-world reinforcement learning.
 
 Overview
 --------
 
-Train a real-world manipulation policy from camera observations and robot feedback.
+Train a CNN policy on a Franka arm with RLinf, from SpaceMouse demonstration collection to asynchronous online RLPD training. The default layout runs Franky (Python bindings to libfranka), rollout, and training on one Ubuntu 20.04 or 22.04 x86-64 host with an NVIDIA GPU, with optional multi-node separation.
 
 .. grid:: 2 4 4 4
    :gutter: 2
 
-   .. grid-item-card:: Models
+   .. grid-item-card:: Robot
       :text-align: center
 
-      CNN policy · OpenPI π₀.₅
+      Franka Emika Panda (Franky)
 
-   .. grid-item-card:: Algorithms
+   .. grid-item-card:: Sensors & Teleop
       :text-align: center
 
-      SAC · Cross-Q · RLPD · PPO
+      Intel RealSense · SpaceMouse
 
-   .. grid-item-card:: Tasks
+   .. grid-item-card:: Workflow
       :text-align: center
 
-      Peg insertion · charger · PnP
+      Demo Collection → Online RLPD (SAC)
 
    .. grid-item-card:: Hardware
       :text-align: center
 
-      Franka · RealSense/ZED · gripper
-
-| **You'll do:** install controller deps → collect demos → start Ray → launch real-world training → watch ``env/reward`` and videos.
-| **Prerequisites:** :doc:`Installation </rst_source/start/installation>` · Franka firmware/libfranka match · local network · safety operator.
+      1× NVIDIA GPU (or Controller + GPU)
 
 Tasks
 ~~~~~
 
 .. list-table::
    :header-rows: 1
-   :widths: 24 24 24
+   :widths: 20 40 40
 
    * - Task
-     - Config / entry point
+     - Config
      - Description
    * - Peg insertion
-     - ``realworld_peginsertion_rlpd_cnn_async``
-     - Insert a peg at a target end-effector pose.
-   * - Charger
-     - ``realworld_charger_sac_cnn_async``
-     - Align and insert a charger using real-world reward feedback.
-   * - PnP / eval
-     - ``realworld_pnp_*``
-     - Collect or deploy pick-and-place style policies.
+     - ``realworld_collect_data``, ``realworld_peginsertion_rlpd_cnn_async``
+     - Collect SpaceMouse demonstrations, then train asynchronously on demonstrations and live robot experience with SpaceMouse intervention.
 
 Observation and Action
 ~~~~~~~~~~~~~~~~~~~~~~
 
 .. list-table::
    :header-rows: 1
-   :widths: 24 24
+   :widths: 25 75
 
    * - Field
      - Description
    * - Observation
-     - RGB camera frames plus optional robot state.
+     - RGB images from the first configured camera (``wrist_1``) and robot state.
    * - Action
-     - 6D/7D continuous Cartesian delta action, optionally with gripper control.
+     - Six Cartesian position and rotation deltas; the gripper stays closed.
    * - Reward
-     - Task success, keyboard labels, or dense task-specific feedback.
-   * - Prompt
-     - Real-world task text in the env config when a VLA policy is used.
+     - Success when the end-effector pose reaches the configured target tolerance.
 
-Hardware Setup
-----------------
+Hardware and Safety
+-------------------
 
-The real-world setup requires the following hardware components:
+Connect the Franka arm to an Ubuntu 20.04 or 22.04 x86-64 host over wired Ethernet, and connect the Intel RealSense camera and SpaceMouse over USB. Your Linux account needs USB read access to both devices; see the `SpaceMouse setup <https://github.com/JakubAndrysek/PySpaceMouse#installation>`_ for its udev rule.
 
-- **Robotic Arm**: Franka Emika Panda
-- **Cameras**: Intel RealSense cameras (default) or Stereolabs ZED cameras
-- **Gripper**: Franka hand (default) or Robotiq 2F-85/2F-140
-- **Computing Unit**: A computer with GPU support for training the CNN policy
-- **Robot Controller**: A small computer (does not require GPU) connected with the robotic arm in the same local network
-- **Space Mouse (Optional)**: For teleoperation data collection or human intervention during training.
-- **GELLO (Optional)**: A joint-level teleoperation device as an alternative to SpaceMouse, providing more intuitive control with native gripper support.
-- **VR / PICO (Optional)**: A headset-and-controller teleoperation device for 6D end-effector control, usable as an alternative to SpaceMouse for data collection.
+Before connecting to the arm, unlock the joints and activate FCI in Franka Desk (``http://<robot_ip>/desk``), and close any other process holding the arm's FCI connection. On a GPU host, confirm ``nvidia-smi`` works before installing RLinf so the installer selects CUDA PyTorch.
 
-.. warning::
+.. list-table::
+   :header-rows: 1
+   :widths: 22 43 35
 
-  Ensure all computers are networked in the same local network.
-  The robot arm is only required to be in the same local network as the robot controller.
-
-.. note::
-
-   **Using ZED cameras or Robotiq grippers?**  See the dedicated guide
-   :doc:`franka_zed_robotiq` for SDK installation, serial-device setup,
-   YAML configuration fields, and data collection.
-
-   **Using VR / PICO teleoperation?** See :doc:`franka_vr` for
-   XRoboToolkit, ZeroMQ, PICO wrapper configuration, and operation steps.
-
-Installation
-------------
-
-The controller node and the training/rollout node(s) should be set up with different software dependencies.
-
-Robot Controller Node
-~~~~~~~~~~~~~~~~~~~~~~
-
-1. Check Franka Firmware Version
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Go to the robot's management webpage (usually at ``http://<robot_ip>/desk``), click on the ``SETTINGS`` tab, and check the version number following ``Control`` in ``DashBoard`` as follows.
-Please take a note of the firmware version for later use.
-
-.. raw:: html
-
-  <div style="flex: 1; text-align: center;">
-      <img src="https://raw.githubusercontent.com/RLinf/misc/main/pic/franka_firmware.png" style="width: 60%;"/>
-  </div>
-.. warning::
-
-  Make sure that the Franka firmware version is ``<5.9.0`` for compatibility with the serl_franka_controllers.
-
-  Firmware version 5.7.2 is recommended for best compatibility.
-
-2. Real-time Kernel Installation
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The Franka controller is recommended to run on a real-time kernel for better performance.
-Follow the instructions in `Franka documentation <https://frankarobotics.github.io/docs/doc/libfranka/docs/real_time_kernel.html>`_ to install the real-time kernel.
-
-3. Installation
-^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-a. Clone RLinf Repository
-__________________________
-
-.. code:: bash
-
-   # For mainland China users, you can use the following for better download speed:
-   # git clone https://gh-proxy.com/github.com/RLinf/RLinf.git
-   git clone https://github.com/RLinf/RLinf.git
-   cd RLinf
-
-b. Install Dependencies
-__________________________
-
-**Option 1: Docker Image**
-
-Use Docker image for the experiment.
-
-To access the robot, camera, and space mouse devices from within the docker container, it is recommended to run the container in the **privileged** mode:
-
-.. code:: bash
-
-   docker run -it --rm \
-      --privileged \
-      --network host \
-      --name rlinf \
-      -v .:/workspace/RLinf \
-      rlinf/rlinf:agentic-rlinf0.4-franka
-      # For mainland China users, you can use the following for better download speed:
-      # infinigence-ai-registry.cn-beijing.cr.aliyuncs.com/rlinf/rlinf:agentic-rlinf0.4-franka
-
-Currently, the docker image contains libfranka version ``0.10.0``, ``0.13.3``, ``0.14.1``, ``0.15.0``, and ``0.18.0`` with franka_ros version ``0.10.0``.
-
-These versions are selected based on the compatibility matrix in `Franka compatibility <https://frankarobotics.github.io/docs/compatibility.html>`_.
-Please check your Franka firmware version and find which libfranka version is compatible with it.
-
-Having determined the compatible libfranka version, you can switch to the corresponding virtual environment in the docker container by running:
-
-.. code:: bash
-
-   source switch_env franka-<libfranka_version>
-   # e.g., for libfranka version 0.15.0
-   # source switch_env franka-0.15.0
-
-**Option 2: Custom Environment**
-
-Our installation script consists of the installation of two parts:
-
-- Python dependencies for RLinf framework and real-world RL training.
-- ROS Noetic, libfranka, franka_ros, and serl_franka_controllers for Franka control.
+   * - Layout
+     - Machines
+     - When to use it
+   * - Single-node (default)
+     - One Ubuntu 20.04 or 22.04 GPU host runs Franky control, rollout, and training.
+     - Most setups; one machine to install and maintain.
+   * - Multi-node (optional)
+     - A controller host (no GPU needed) runs Franky control; a GPU server runs actor and rollout.
+     - Isolate robot control from training load, or keep the GPU server remote.
 
 .. warning::
 
-  The installation script only supports Ubuntu 20.04 due to ROS Noetic requirements.
+   Keep the emergency stop within reach and supervise every hardware run. Secure the peg and fixture, clear the workspace, and verify that reset motions are safe. Peg insertion resets approximately 10 cm above the target with randomized horizontal position and yaw; never copy a target pose from another robot.
 
-.. warning::
+.. dropdown:: Firmware check & libfranka compatibility
 
-  If you have already installed ROS Noetic, libfranka, franka_ros and serl_franka_controllers manually, you can skip the installation of these packages by setting the environment variable ``export SKIP_ROS=1`` before running the installation script.
+   Open Franka Desk at ``http://<robot_ip>/desk``, go to ``SETTINGS``, and record the version shown after ``Control``:
 
-  If you have skipped these installations, please make sure that you have sourced the ROS setup script (usually at ``/opt/ros/noetic/setup.bash``), as well as the franka_ros and serl_franka_controllers setup scripts (usually at ``<your_catkin_ws>/devel/setup.bash``) in your `~/.bashrc`. Also, make sure the libfranka shared library is in your ``LD_LIBRARY_PATH`` or installed in the system library path `/usr/lib`.
+   .. figure:: https://raw.githubusercontent.com/RLinf/misc/main/pic/franka_firmware.png
+      :align: center
+      :width: 60%
+      :alt: Franka Desk dashboard showing the Control firmware version
 
-  This is important **every time before you start ray on the controller node** to ensure that the Franka control packages can be correctly found.
+      Control firmware version in Franka Desk.
 
-.. warning::
+   Match that firmware version in the `Franka compatibility table <https://frankarobotics.github.io/docs/compatibility.html>`_ to choose a libfranka version. Prebuilt Franky wheels bundle libfranka 0.19.0 (default) or 0.15.0 on x86-64; for firmware requiring another libfranka version, use the **Legacy ROS (Ubuntu 20.04)** tab below.
 
-  Currently, the installation of ROS Noetic, libfranka, and franka_ros is only tested against Franka firmware version ``>=5.7.2`` and ``<5.9.0`` with libfranka version ``0.15``.
+   RLinf is tested with firmware 5.9.2 + libfranka 0.19.0 (standard kernel, real-time check disabled) and firmware 5.7.2–5.9.0 + libfranka 0.15.0 (real-time kernel). Do not change robot firmware just to match this example.
 
-  For other firmware versions, please first check the compatibility matrix in `Franka compatibility <https://frankarobotics.github.io/docs/compatibility.html>`_.
-  For a desired libfranka and franka_ros version, you can use `export LIBFRANKA_VERSION=<version>` and `export FRANKA_ROS_VERSION=<version>` to specify the versions before running the installation script.
+.. dropdown:: Real-time kernel, NVIDIA driver & host setup (first-time setup)
 
-.. note::
+   **1. Install a PREEMPT_RT kernel (recommended)**
 
-  If the script does not work for you, please refer to the official `ROS Noectic <https://wiki.ros.org/noetic/Installation/Ubuntu>`_ for ROS Noetic installation, `Franka <https://frankarobotics.github.io/docs/libfranka/docs/installation.html>`_ for libfranka and franka_ros installation, and `serl_franka_controllers <https://github.com/rail-berkeley/serl_franka_controllers>`_ for serl_franka_controllers installation.
+   libfranka sends a command every millisecond, and a PREEMPT_RT kernel keeps the 1 kHz loop on schedule under training load. Install it on the host (never inside Docker) following Franka's `real-time kernel guide <https://frankarobotics.github.io/docs/doc/libfranka/docs/real_time_kernel.html>`_, keeping your existing kernel as a GRUB fallback. After rebooting, confirm the second command prints ``1``:
 
-Execute the following command to install the dependencies:
+   .. code-block:: bash
 
-.. code:: bash
+      uname -r
+      cat /sys/kernel/realtime
 
-   # For mainland China users, you can add the `--use-mirror` flag to the install.sh command for better download speed.
+   **2. Build the NVIDIA driver for the real-time kernel**
 
-   bash requirements/install.sh embodied --env franka
-   source .venv/bin/activate
+   Install or rebuild the NVIDIA module against the matching ``linux-headers`` using ``IGNORE_PREEMPT_RT_PRESENCE=1``. For APT, configure the repository from NVIDIA's `driver installation guide <https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/ubuntu.html>`_ and replace ``DRIVER_PACKAGE`` with your GPU package; for an existing DKMS driver, use the second command:
 
-Training / Rollout Nodes
-~~~~~~~~~~~~~~~~~~~~~~~~
+   .. code-block:: bash
 
-A. Clone RLinf Repository
-^^^^^^^^^^^^^^^^^^^^^^^^^
+      # APT install
+      sudo env IGNORE_PREEMPT_RT_PRESENCE=1 apt-get install -y DRIVER_PACKAGE
+      sudo reboot
 
-.. code:: bash
+      # Or rebuild an existing DKMS driver
+      sudo env IGNORE_PREEMPT_RT_PRESENCE=1 dkms autoinstall -k "$(uname -r)"
+      sudo reboot
 
-   # For mainland China users, you can use the following for better download speed:
-   # git clone https://gh-proxy.com/github.com/RLinf/RLinf.git
-   git clone https://github.com/RLinf/RLinf.git
-   cd RLinf
+   Verify ``nvidia-smi`` lists your GPU before installing RLinf. Repeat the environment variable whenever a driver or kernel update rebuilds the module.
 
-B. Install Dependencies
-^^^^^^^^^^^^^^^^^^^^^^^
+   .. warning::
 
-**Option 1: Docker Image**
+      ``IGNORE_PREEMPT_RT_PRESENCE=1`` only bypasses the build check; NVIDIA does not officially support PREEMPT_RT kernels. Boot the fallback kernel if the GPU is unavailable.
 
-Use Docker image for the experiment.
+   **3. Grant real-time scheduling permissions**
 
-.. code:: bash
+   RLinf locks the Franky control process in memory and sets ``SCHED_FIFO`` priority 80 with CPU pinning. Add your login account to a ``realtime`` group and set limits in ``/etc/security/limits.d/99-rlinf-realtime.conf``:
 
-   docker run -it --rm --gpus all \
-      --shm-size 20g \
-      --network host \
-      --name rlinf \
-      -v .:/workspace/RLinf \
-      rlinf/rlinf:agentic-rlinf0.4-maniskill_libero
-      # For mainland China users, you can use the following for better download speed:
-      # infinigence-ai-registry.cn-beijing.cr.aliyuncs.com/rlinf/rlinf:agentic-rlinf0.4-maniskill_libero
+   .. code-block:: bash
 
-**Option 2: Custom Environment**
+      getent group realtime || sudo groupadd realtime
+      sudo usermod -aG realtime "$(id -un)"
+      sudoedit /etc/security/limits.d/99-rlinf-realtime.conf
 
-Install dependencies directly in your environment by running the following command:
+   Add these lines, then log out and back in so ``ulimit -r`` prints ``99`` and ``ulimit -l`` prints ``unlimited`` (helpful on standard kernels too):
 
-.. code:: bash
+   .. code-block:: text
 
-   # For mainland China users, you can add the `--use-mirror` flag to the install.sh command for better download speed.
+      @realtime - rtprio 99
+      @realtime - memlock unlimited
 
-   bash requirements/install.sh embodied --model openvla --env maniskill_libero
-   source .venv/bin/activate
+   **4. Run without a real-time kernel (optional)**
 
-Download the Model
-------------------
+   By default, Franky uses ``realtime_config: ignore`` and logs a warning on a standard kernel. To refuse starting without PREEMPT_RT, add ``realtime_config: enforce`` beside ``robot_ip`` in the hardware config.
 
-Before starting training, you need to download the corresponding pretrained model:
+   .. warning::
 
-.. code:: bash
+      On a standard kernel, heavy training load can cause libfranka to miss control deadlines and trigger ``communication_constraints_violation`` reflexes. Verify control under your intended training load with an operator present.
 
-   # Download the model (choose either method)
-   # Method 1: Using git clone
-   git lfs install
-   git clone https://huggingface.co/RLinf/RLinf-ResNet10-pretrained
-   git clone https://huggingface.co/RLinf/RLinf-ResNet10-pretrained
+Setup and Run
+-------------
 
-   # Method 2: Using huggingface-hub
-   # For mainland China users, you can use the following for better download speed:
-   # export HF_ENDPOINT=https://hf-mirror.com
-   pip install huggingface-hub
-   hf download RLinf/RLinf-ResNet10-pretrained --local-dir RLinf-ResNet10-pretrained
-   hf download RLinf/RLinf-ResNet10-pretrained --local-dir RLinf-ResNet10-pretrained
+.. include:: _setup_common.rst
 
-After downloading, make sure to correctly specify the model path in the configuration yaml file.
+.. tab-set::
 
-Run It
-------
+   .. tab-item:: Single-Node (Default)
 
-Prerequisites
-~~~~~~~~~~~~~~~
+      **1. Install**
 
-**Get the Target Pose for the Task**
+      Clone RLinf and install the Franka environment (bundles libfranka 0.19.0 via manylinux 2.28 wheels for Ubuntu 20.04/22.04):
 
-To acquire the target pose for the peg-insertion task, you can use the `toolkits.realworld_check.test_franka_controller` script.
+      .. code-block:: bash
 
-First, you need to activate your Franka robot's programming mode, and manually move the robot to the desired target pose.
+         git clone https://github.com/RLinf/RLinf.git && cd RLinf
+         bash requirements/install.sh embodied --env franka && source .venv/bin/activate
 
-Then, before running, set the environment variable ``FRANKA_ROBOT_IP`` to your robot's IP address:
+      Prefix ``LIBFRANKA_VERSION=0.15.0`` if your firmware requires 0.15.0, set ``FRANKY_WHEEL`` to a custom wheel URL or local path if needed, or pass ``--no-root`` when APT system packages are already installed.
 
-.. code-block:: bash
+      **2. Download**
 
-   export FRANKA_ROBOT_IP=<your_robot_ip_address>
+      Download the pretrained ResNet-10 encoder used by both actor and rollout:
 
-Next, run the script:
+      .. code-block:: bash
 
-.. code-block:: bash
+         hf download RLinf/RLinf-ResNet10-pretrained --local-dir ./models/RLinf-ResNet10-pretrained
 
-   python -m toolkits.realworld_check.test_franka_controller
+      **3. Launch**
 
-The script will prompt you to input command, you can enter `getpos_euler` to get the current end-effector pose in Euler angles.
+      Check the camera stream and record its serial number:
 
-Data Collection
-~~~~~~~~~~~~~~~~~
+      .. code-block:: bash
 
-For RLPD experiments, you need to first collect some initial data for training.
-The data collection only needs to be run on the controller node without other nodes.
+         python -m toolkits.realworld_check.test_franka_camera
 
-1. Source the virtual python environment and franka_ros and serl_franka_controllers setup scripts:
+      Update the ``label: franka`` entry under ``cluster.node_groups`` with your robot IP and camera serial in ``examples/embodiment/config/realworld_collect_data.yaml`` and ``examples/embodiment/config/realworld_peginsertion_rlpd_cnn_async.yaml``.
 
-.. code-block:: bash
+      In the training config, also set ``cluster.num_nodes: 1`` and leave the ``4090`` group unchanged (it names GPU node 0 regardless of GPU model):
 
-   source <path_to_your_venv>/bin/activate
-   source <your_catkin_ws>/devel/setup.bash
+      .. code-block:: yaml
 
-2. Modify the configuration file ``examples/embodiment/config/realworld_collect_data.yaml`` by filling your robot's IP address to the field ``robot_ip``.
+         - label: franka
+           node_ranks: 0
+           hardware:
+             type: Franka
+             configs:
+               - robot_ip: ROBOT_IP
+                 node_rank: 0
+                 camera_serials: ["CAMERA_SERIAL"]
 
-.. code-block:: yaml
+      Move the peg to the target insertion pose in guiding mode, unlock the arm and activate FCI in Franka Desk, then read the pose (enter ``getpos_euler``, then ``q`` to release the arm):
 
-  cluster:
-    num_nodes: 1
-    component_placement:
+      .. code-block:: bash
+
+         export FRANKA_ROBOT_IP=192.168.1.10  # Replace with your robot IP
+         python -m toolkits.realworld_check.test_franka_controller
+         export FRANKA_TARGET_POSE='[x, y, z, roll, pitch, yaw]'  # Replace all six entries
+
+      .. dropdown:: Additional controller check commands (optional)
+
+         .. list-table::
+            :header-rows: 1
+            :widths: 28 72
+
+            * - Category
+              - Options
+            * - Interactive commands
+              - ``getpos``, ``getpos_euler``, ``getjoint``, ``getstate``, ``gethand``, ``clear``, ``home``, ``open``, ``close``, ``q``
+            * - CLI flags
+              - ``--robot-ip``, ``--realtime-config enforce``
+
+      Collect 20 SpaceMouse demonstrations (stored under ``logs/franka-demo/demo_buffer``, with optional ``pickle_episode/`` and ``lerobot_dataset/`` exports; see :doc:`franka_gello` for GELLO collection), then launch online RLPD training after collection exits and releases the arm:
+
+      .. code-block:: bash
+
+         RLINF_LOG_DIR="$PWD/logs/franka-demo" \
+           bash examples/embodiment/collect_data.sh realworld_collect_data \
+           "env.eval.override_cfg.target_ee_pose=$FRANKA_TARGET_POSE"
+
+         bash examples/embodiment/run_realworld_async.sh \
+           realworld_peginsertion_rlpd_cnn_async \
+           "env.train.override_cfg.target_ee_pose=$FRANKA_TARGET_POSE" \
+           "algorithm.demo_buffer.load_path=$PWD/logs/franka-demo/demo_buffer" \
+           "actor.model.model_path=$PWD/models/RLinf-ResNet10-pretrained"
+
+      Use a fresh ``RLINF_LOG_DIR`` for each collection session. Supervise the arm throughout training and intervene with the SpaceMouse as needed; when done, interrupt the launcher and wait for the arm to stop.
+
+   .. tab-item:: Multi-Node (Robot + GPU)
+
+      **1. Install on both hosts**
+
+      Install the same RLinf revision, Python version, and Ray version on the controller host (no GPU needed; installer selects CPU-only PyTorch) and on the GPU server:
+
+      .. code-block:: bash
+
+         git clone https://github.com/RLinf/RLinf.git && cd RLinf
+         bash requirements/install.sh embodied --env franka && source .venv/bin/activate
+
+      **2. Collect demos and download model**
+
+      Collect demonstrations on the controller first (as in the Single-Node tab), then copy ``logs/franka-demo/demo_buffer`` to the GPU server. On the GPU server, download the pretrained ResNet-10 encoder:
+
+      .. code-block:: bash
+
+         hf download RLinf/RLinf-ResNet10-pretrained --local-dir ./models/RLinf-ResNet10-pretrained
+
+      **3. Start Ray cluster and launch**
+
+      On the GPU server, edit ``examples/embodiment/config/realworld_peginsertion_rlpd_cnn_async.yaml``: set ``cluster.num_nodes: 2`` and set both ``node_ranks`` and ``node_rank`` for the Franka group to 1 (actor and rollout stay on GPU 0 of node 0).
+
+      .. warning::
+
+         Ray captures the active Python environment and environment variables when ``ray start`` runs. Activate ``.venv`` and export ``RLINF_NODE_RANK`` before ``ray start`` on both machines. Use each machine's IP on their shared network—not the arm's IP—and export ``RLINF_COMM_NET_DEVICES`` if a host has multiple network interfaces.
+
+      Start Ray on both nodes:
+
+      .. code-block:: bash
+
+         # On the GPU server (head node)
+         export RLINF_NODE_RANK=0
+         export HEAD_IP=192.168.10.10
+         ray start --head --port=6379 --node-ip-address="$HEAD_IP"
+
+         # On the controller host (worker node)
+         export RLINF_NODE_RANK=1
+         export HEAD_IP=192.168.10.10
+         export CONTROLLER_IP=192.168.10.11
+         ray start --address="$HEAD_IP:6379" --node-ip-address="$CONTROLLER_IP"
+
+      Verify both nodes appear in ``ray status`` on the GPU server, then run the training command from the Single-Node tab on the GPU server only (the controller needs neither model weights nor ``demo_buffer``). For multi-robot setups, see :doc:`/rst_source/guides/realworld_robot` and :doc:`/rst_source/guides/hetero`.
+
+   .. tab-item:: Legacy ROS (Ubuntu 20.04)
+
+      Use the ROS Noetic backend (``franka_ros`` and ``serl_franka_controllers``) for existing ROS deployments or firmware requiring a libfranka version other than 0.15.0 or 0.19.0. Install natively on Ubuntu 20.04 into a separate virtual environment:
+
+      **1. Install**
+
+      .. code-block:: bash
+
+         git clone https://github.com/RLinf/RLinf.git && cd RLinf
+         LIBFRANKA_VERSION=0.15.0 bash requirements/install.sh embodied --env franka-ros --venv franka-ros && source franka-ros/bin/activate
+
+      The installer builds libfranka, RLinf's ``franka_ros`` fork, and ``serl_franka_controllers`` under ``franka-ros/franka_catkin_ws`` and appends the ROS setup scripts to ``franka-ros/bin/activate``.
+
+      Confirm the build with ``rospack find serl_franka_controllers``. Override installer defaults with these environment variables:
+
+      .. list-table::
+         :header-rows: 1
+         :widths: 32 16 52
+
+         * - Variable
+           - Default
+           - Purpose
+         * - ``LIBFRANKA_VERSION``
+           - ``0.15.0``
+           - libfranka version matching your firmware.
+         * - ``FRANKA_ROS_VERSION``
+           - ``0.10.0``
+           - ``franka_ros`` version to build.
+         * - ``FRANKA_REALTIME_CONFIG``
+           - ``enforce``
+           - Set to ``ignore`` for a non-RT kernel and re-run the installer without rebuilding.
+         * - ``SKIP_ROS``
+           - ``0``
+           - Set to ``1`` to use your own ROS and catkin installation.
+
+      .. warning::
+
+         With ``SKIP_ROS=1``, install ROS Noetic, libfranka, ``franka_ros``, and ``serl_franka_controllers`` yourself (see the `ROS Noetic <https://wiki.ros.org/noetic/Installation/Ubuntu>`_, `libfranka <https://frankarobotics.github.io/docs/libfranka/docs/installation.html>`_, and `serl_franka_controllers <https://github.com/rail-berkeley/serl_franka_controllers>`_ guides).
+
+         Before every launch (or before ``ray start`` in multi-node setups), source ``/opt/ros/noetic/setup.bash`` and your catkin ``devel/setup.bash``, and add libfranka to ``LD_LIBRARY_PATH``.
+
+      **2. Configure and launch**
+
+      Add ``backend: franka_ros`` to the Franka hardware config (do not add ``realtime_config`` in YAML; the ROS backend reads ``FRANKA_REALTIME_CONFIG`` from installation instead):
+
+      .. code-block:: yaml
+
+         configs:
+           - robot_ip: ROBOT_IP
+             node_rank: 0
+             camera_serials: ["CAMERA_SERIAL"]
+             backend: franka_ros
+
+      Verify the controller in the active ``franka-ros`` environment, then run the collection and training commands from the Single-Node tab (or follow the Multi-Node tab for multi-node runs):
+
+      .. code-block:: bash
+
+         python -m toolkits.realworld_check.test_franka_controller --backend franka_ros
+
+      RLinf starts ``roscore``, ``roslaunch serl_franka_controllers impedance.launch``, and ``joint.launch`` (during joint resets) automatically. In multi-node setups, only the controller needs ``franka-ros``; the GPU server uses the standard ``franka`` environment.
+
+      **Differences from Franky and ROS troubleshooting:**
+
+      .. list-table::
+         :header-rows: 1
+         :widths: 30 70
+
+         * - Topic
+           - Legacy ROS behavior
+         * - Control mode
+           - Accepts Cartesian targets only; joint-position control requires Franky.
+         * - Gripper
+           - ``gripper_type: franka`` communicates over ``/franka_gripper`` and responds only while the arm is connected.
+         * - Impedance gains
+           - Applied via ``dynamic_reconfigure``; hardware ``compliance`` overrides in YAML are ignored.
+         * - Non-RT kernel error
+           - Re-run the installer with ``FRANKA_REALTIME_CONFIG=ignore`` if ``Running kernel does not have realtime capabilities`` appears.
+         * - Arm not ready / FCI busy
+           - Confirm FCI is active in Franka Desk and close competing controllers. After a crashed run, run ``ray stop`` and ``pkill -f roslaunch``, then check state topics with ``rostopic echo -n 1 /franka_state_controller/franka_states``.
+
+.. _franka-motion-settings:
+
+.. dropdown:: Configure Arm Motion (Franky Compliance Defaults)
+
+   Collection, training, evaluation, PICO/SpaceMouse teleoperation, and Cartesian GELLO teleoperation all share the same Franky Cartesian controller defaults when ``compliance`` is omitted from the hardware entry:
+
+   .. list-table::
+      :header-rows: 1
+      :widths: 30 15 55
+
+      * - Setting
+        - Default
+        - Meaning
+      * - ``translational_stiffness``
+        - 1000 N/m
+        - Initial stiffness for position errors.
+      * - ``rotational_stiffness``
+        - 50 Nm/rad
+        - Initial stiffness for orientation errors.
+      * - ``translational_clip``
+        - 0.008 m
+        - Initial position-error limit used to compute restoring torque.
+      * - ``rotational_clip``
+        - 0.04 rad
+        - Initial orientation-error limit used to compute restoring torque.
+      * - ``max_step``
+        - 0.03 m
+        - Maximum position change from the previous commanded target per call.
+      * - ``max_step_rad``
+        - 0.10 rad
+        - Maximum orientation change from the previous commanded target per call.
+
+   The first target is limited relative to the measured pose. Target-change limits apply per call, and error clips bound controller restoring error; the environment still applies its own action scale and workspace limits.
+
+   At reset, tasks can request updated gains via ``compliance_param``, which Franky caps at 1200 N/m and 80 Nm/rad with error-clip floors of 5 mm and 0.02 rad (for peg insertion, reset uses 5 mm x/y, 10 mm z, and 0.02 rad clips; ``max_step`` and ``max_step_rad`` stay active after reset).
+
+   To override specific fields, add a ``compliance`` mapping beside ``robot_ip`` in each recipe that needs it (misspelled keys fail validation before connecting):
+
+   .. code-block:: yaml
+
+      compliance:
+        max_step: 0.02
+
+   Joint-position commands (such as dual-arm GELLO joint teleoperation) use joint control and leave these Cartesian settings unused.
+
+.. dropdown:: Keyboard Reward Labeling (Optional)
+
+   For tasks without an automatic pose-based success signal, enable keyboard reward labeling in the training config:
+
+   .. code-block:: yaml
+
       env:
-        node_group: franka
-        placement: 0
-    node_groups:
-      - label: franka
-        node_ranks: 0
-        hardware:
-          type: Franka
-          configs:
-            - robot_ip: ROBOT_IP
-              node_rank: 0
+        train:
+          keyboard_reward_wrapper: single_stage  # or multi_stage
 
-Modify the `target_ee_pose` field in the configuration file to the target pose you have acquired in the previous step.
+   .. list-table::
+      :header-rows: 1
+      :widths: 28 72
 
-.. code-block:: yaml
+      * - Mode
+        - Keys
+      * - ``single_stage``
+        - ``a`` emits failure, ``b`` neutral, and ``c`` success.
+      * - ``multi_stage``
+        - ``a`` / ``b`` / ``c`` switch stages; ``q`` emits a negative reward.
 
-  env:
-    eval:
-      override_cfg:
-      target_ee_pose: [0.5, 0.0, 0.1, -3.14, 0.0, 0.0]
+   Find the keyboard event device on the robot host, grant permission, and export ``RLINF_KEYBOARD_DEVICE`` before launching (or before ``ray start`` in multi-node setups):
 
-4. Run the data collection script:
+   .. code-block:: bash
 
-.. code-block:: bash
+      ls -l /dev/input/by-id/*-event-kbd
+      sudo chmod 666 /dev/input/event20
+      export RLINF_KEYBOARD_DEVICE=/dev/input/event20
 
-   bash examples/embodiment/collect_data.sh
+.. dropdown:: Other Franka Workflows (VLA Models & Related Guides)
 
-During the data collection, you can manually intervene the robot using a space mouse to collect data.
+   Combine Franka dependencies (including dexterous-hand support) with a VLA policy in its own virtual environment:
 
-The script will terminate after 20 episodes of data collection (can be configured with the `num_data_episodes` field in the configuration file), and the collected data will be stored in the ``logs/[running-timestamp]/data.pkl`` folder.
+   .. code-block:: bash
 
-5. After data collection, you can upload the collected data to the training/rollout nodes.
+      # OpenPI
+      bash requirements/install.sh embodied --model openpi --env franka --venv openpi && source openpi/bin/activate
 
-.. note::
+      # OpenVLA
+      bash requirements/install.sh embodied --model openvla --env franka --venv openvla && source openvla/bin/activate
 
-   **Using ZED cameras and Robotiq grippers?**  A dedicated data collection
-   script and config are available.  See the
-   :ref:`Data Collection <franka-zed-robotiq-data-collection>` section in
-   :doc:`franka_zed_robotiq`.
+      # OpenVLA-OFT
+      bash requirements/install.sh embodied --model openvla-oft --env franka --venv openvla-oft && source openvla-oft/bin/activate
 
-Data Collection with GELLO
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      # GR00T
+      bash requirements/install.sh embodied --model gr00t --env franka --venv gr00t && source gr00t/bin/activate
 
-In addition to SpaceMouse, RLinf also supports using `GELLO <https://github.com/wuphilipp/gello_software>`_ for teleoperation data collection.
-GELLO is a joint-level teleoperation device that mirrors the kinematic structure of the Franka arm, providing more intuitive and precise control with full gripper support.
+   Related guides:
 
-**Prerequisites**
+   - :doc:`franka_gello` and :doc:`franka_vr` for GELLO or PICO teleoperation.
+   - :doc:`franka_pi0_sft_deploy` and :doc:`hg-dagger` for OpenPI policies.
+   - :doc:`franka_reward_model` for learned reward models.
+   - :doc:`franka_zed_robotiq` and :doc:`franka_dexhand` for other cameras and end effectors.
+   - :doc:`dual_franka` for dual-arm control and :doc:`/rst_source/guides/rtc` for overlapping action execution with inference.
 
-- Install the ``gello`` and ``gello-teleop`` packages. See :doc:`franka_gello` for detailed installation instructions.
-- A GELLO device connected to the control node via USB serial.
-- Identify your GELLO serial port (e.g. ``/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTA0OUKN-if00-port0``).
-  You can list available serial ports with:
+Results and Troubleshooting
+---------------------------
 
-  .. code-block:: bash
+Monitor ``env/success_once``, ``env/return``, and SAC actor/critic losses in TensorBoard (``tensorboard --logdir ./logs --port 6006``); see :doc:`Training metrics <../../reference/metrics>` and :doc:`/rst_source/guides/logger` for logging options. The curve and videos below show representative peg-insertion and charger runs.
 
-     ls /dev/serial/by-id/
+.. figure:: https://raw.githubusercontent.com/RLinf/misc/main/pic/realworld-curve.png
+   :align: center
+   :width: 100%
 
-**Configuration**
-
-Use the config file ``examples/embodiment/config/realworld_collect_data_gello.yaml``.
-The key differences from the SpaceMouse config are:
-
-.. code-block:: yaml
-
-   env:
-     eval:
-       teleop: gello
-       gello_port: "/dev/serial/by-id/usb-FTDI_..."  # Replace with your GELLO serial port
-
-**Running**
-
-.. code-block:: bash
-
-   bash examples/embodiment/collect_data.sh realworld_collect_data_gello
-
-The workflow is the same as SpaceMouse collection: use the GELLO device to demonstrate the task, and the script will automatically save successful episodes.
-
-Cluster Setup
-~~~~~~~~~~~~~~~~~
-
-Before starting the experiment, you will first setup the ray cluster properly.
-
-.. warning::
-  This step is essential, proceed with caution! Even the slightest misconfiguration may result in missing packages or failure to control the robot.
-
-RLinf uses ray for managing distributed environments. So it is subject to one critical characteristic of ray: when you run `ray start` on a node, the current Python interpreter and environment variables will be recorded by ray, and all the processes started by ray on that node later will inherit the same Python interpreter and environment variables.
-
-We provide a utility script ``ray_utils/realworld/setup_before_ray.sh`` to help you set up the environment before starting ray on each node.
-You can modify the script accordingly and source it before starting ray on each node.
-
-Specifically, the script sets up the following important aspects:
-
-1. Source the correct virtual python environment. See the section on Dependency Installation for details.
-
-2. Source the franka_ros and serl_franka_controllers packages setup scripts (if on the controller node), usually at ``<your_catkin_ws>/devel/setup.bash``. **If you are using the docker image or the installation script, this is already done when you source the virtual python environment.**
-
-3. Setup RLinf environment variables on all nodes:
-
-.. code-block:: bash
-
-   export PYTHONPATH=<path_to_your_RLinf_repo>:$PYTHONPATH
-   export RLINF_NODE_RANK=<node_rank_of_this_node>
-   export RLINF_COMM_NET_DEVICES=<network_device_for_communication> # Optional if you do not have multiple network devices
-
-The ``RLINF_NODE_RANK`` is set to ``0 ~ N-1`` for each of the ``N`` nodes in the cluster, and is used by the configuration file to identify the node.
-
-The ``RLINF_COMM_NET_DEVICES`` is optional and only needed if you have multiple network devices on your machine, e.g., ``eth0``, ``enp3s0``, which must be the network card providing the IP that can be accessed by other nodes in the cluster.
-This can be checked by running ``ifconfig`` or ``ip addr`` on your machine.
-
-After sourcing the script, you can start ray on each node as follows:
-
-Here `<head_node_ip_address>` is the IP address of the head node that can be accessed by other nodes in the cluster.
-
-.. code-block:: bash
-
-   # On the head node (node rank 0)
-   ray start --head --port=6379 --node-ip-address=<head_node_ip_address>
-
-   # On worker nodes (node rank 1 ~ N-1)
-   ray start --address='<head_node_ip_address>:6379'
-
-You can run `ray status` to check if the cluster is set up correctly.
-
-Configuration File
-~~~~~~~~~~~~~~~~~~
-
-Before starting the experiment, you need to modify the configuration file, ``examples/embodiment/config/realworld_peginsertion_rlpd_cnn_async.yaml`` according to your setup.
-
-Similarly, you first need to fill your robot's IP address to the field ``robot_ip`` and the target end-effector pose to the field ``target_ee_pose``.
-
-Then, change the ``model_path`` field in both ``rollout`` and ``actor`` sections to the path where you have downloaded the pretrained model.
-Change the ``data.path`` field to the path where you have uploaded the collected demo data.
-
-Headless Keyboard Reward Wrapper (Optional)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-If you want to label rewards from a physical keyboard by human, enable the keyboard wrapper in the real-world env config.
-
-For example, in ``examples/embodiment/config/realworld_peginsertion_rlpd_cnn_async.yaml``:
-
-.. code-block:: yaml
-
-   env:
-     train:
-       keyboard_reward_wrapper: single_stage  # or multi_stage
-
-The available modes are:
-
-- ``single_stage``: press ``a`` for failure reward, ``b`` for neutral reward, and ``c`` for success reward.
-- ``multi_stage``: press ``a`` / ``b`` / ``c`` to switch among reward stages, and press ``q`` to emit a negative reward.
-
-The keyboard listener reads Linux input devices directly, so you should export ``RLINF_KEYBOARD_DEVICE`` before starting ray on the controller node.
-
-First, list the available keyboard devices:
-
-.. code-block:: bash
-
-   ls -l /dev/input/by-id/*-event-kbd
-
-This command shows the stable keyboard name and the corresponding ``eventX`` device. For example, ``usb-Logitech_USB_Keyboard-event-kbd -> ../event20`` means the keyboard device is ``/dev/input/event20``.
-
-Before starting training, grant access to that event device:
-
-.. code-block:: bash
-
-   chmod 666 /dev/input/event20
-
-Then export the event device in your setup script or shell before ``ray start``:
-
-.. code-block:: bash
-
-   export RLINF_KEYBOARD_DEVICE=/dev/input/event20
-
-If you are using ``ray_utils/realworld/setup_before_ray.sh``, add the export there on the controller node so that all ray-launched env processes inherit it.
-
-Testing the Setup (Optional)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-We provide several test scripts to verify that the setup is correct before starting the experiment. This step is optional but recommended.
-
-First, test the camera connection by running on the controller node:
-
-.. code-block:: bash
-
-   python -m toolkits.realworld_check.test_franka_camera
-
-Next, test the basic cluster setup by running a dummy setup. Refer to ``examples/embodiment/config/realworld_dummy_franka_sac_cnn.yaml`` and add `env.eval.override_cfg`.
-You can set the `is_dummy` field to `True` in both `env.train.override_cfg` and `env.eval.override_cfg` sections in the configuration file to enable the dummy setup.
-And fill the camera serial numbers obtained from ``running toolkits.realworld_check.test_franka_camera.py`` into the field `camera_serials` under both `env.train.override_cfg` and `env.eval.override_cfg`.
-
-Then, run the test script on the head node:
-
-.. code-block:: bash
-
-   bash examples/embodiment/run_realworld_async.sh realworld_peginsertion_rlpd_cnn_async
-
-Run It
-~~~~~~
-
-After verifying the setup, you can start the real-world training experiment by running the following command on the head node:
-
-.. code-block:: bash
-
-   bash examples/embodiment/run_realworld_async.sh realworld_peginsertion_rlpd_cnn_async
-
-Advance: Multi-Robot Setup
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-RLinf supports simple management of a fleet of robots for parallel data collection and training.
-To set up multiple robots, you need to modify the configuration file to include multiple robot configurations under the `node_groups` section.
-
-An example configuration for two Franka robots is shown in ``examples/embodiment/config/realworld_peginsertion_rlpd_cnn_async_2arms.yaml``, as follows:
-
-.. code-block:: yaml
-
-  cluster:
-  num_nodes: 3 # One training/rollout node + two robot controller nodes
-  component_placement:
-    actor:
-      node_group: "4090"
-      placement: 0 # Run on the first GPU of the training/rollout node
-    env:
-      node_group: franka
-      placement: 0-1 # Two robots assigned to two envs, rank 0 and rank 1
-    rollout:
-      node_group: "4090"
-      placement: 0:0-1 # Two rollout processes on the first GPU of the training/rollout node
-  node_groups:
-    - label: "4090"
-      node_ranks: 0 # Node rank 0 is the training/rollout node
-    - label: franka
-      node_ranks: 1-2 # Node ranks 1 and 2 are the two robot controller nodes
-      hardware:
-        type: Franka
-        configs:
-          - robot_ip: ROBOT_IP_FOR_RANK1
-            node_rank: 1 # The node rank of the first robot controller node
-          - robot_ip: ROBOT_IP_FOR_RANK2
-            node_rank: 2 # The node rank of the second robot controller node
-
-Naturally, the settings can be extended to more robots by following the same pattern.
-For more details regarding the configuration syntax of this kind of heterogeneous hardware setup, please refer to :doc:`../../guides/hetero`.
-
-To hide policy inference latency on the real robot by overlapping it with action-chunk
-execution, see :doc:`RTC <../../guides/rtc>`.
-
-If a Franky impedance controller stops unexpectedly, the next arm command or
-state read raises an error, including the SDK motion error when available.
-Check the error on the robot control worker and resolve its cause before
-restarting training. For direct Python use, call ``disconnect()`` followed by
-``connect()`` before resuming commands; ``clear_errors()`` does not restart a
-failed tracking session.
-
-Visualization and Results
--------------------------
-
-**1. Tensorboard Logging**
-
-At the ray head node, run:
-
-.. code-block:: bash
-
-   # Start TensorBoard
-   tensorboard --logdir ./logs --port 6006
-
-**2. Key Metrics Tracked**
-
-- **Environment Metrics**:
-
-  - ``env/episode_len``: Number of environment steps elapsed in the episode (unit: step).
-  - ``env/return``: Episode return.
-  - ``env/reward``: Step-level reward.
-  - ``env/success_once``: Recommended metric to monitor training performance. It directly reflects the unnormalized episodic success rate.
-
-- **Training Metrics**:
-
-  - ``train/sac/critic_loss``: Loss of the Q-function.
-  - ``train/critic/grad_norm``: Gradient norm of the Q-function.
-
-  - ``train/sac/actor_loss``: Loss of the policy.
-  - ``train/actor/entropy``: Entropy of the policy.
-  - ``train/actor/grad_norm``: Gradient norm of the policy.
-
-  - ``train/sac/alpha_loss``: Loss of the temperature parameter.
-  - ``train/sac/alpha``: Value of the temperature parameter.
-  - ``train/alpha/grad_norm``: Gradient norm of the temperature parameter.
-
-  - ``train/replay_buffer/size``: Current size of the replay buffer.
-  - ``train/replay_buffer/max_reward``: Maximum reward stored in the replay buffer.
-  - ``train/replay_buffer/min_reward``: Minimum reward stored in the replay buffer.
-  - ``train/replay_buffer/mean_reward``: Average reward stored in the replay buffer.
-  - ``train/replay_buffer/std_reward``: Standard deviation of rewards stored in the replay buffer.
-  - ``train/replay_buffer/utilization``: Utilization rate of the replay buffer.
-
-Real World Results
-~~~~~~~~~~~~~~~~~~
-Here we provide demo videos and training curves for the task peg-insertion and charger task, respectively. Within 1 hour of training, the robot is able to learn a policy that can continuously successfully complete the task.
+   Real-world training curves.
 
 .. raw:: html
 
-  <div style="flex: 0.8; text-align: center;">
-      <img src="https://raw.githubusercontent.com/RLinf/misc/main/pic/realworld-curve.png" style="width: 100%;"/>
-      <p><em>Training Curve</em></p>
-    </div>
+   <video controls muted playsinline preload="metadata" width="720">
+     <source src="https://raw.githubusercontent.com/RLinf/misc/main/pic/peg-insertion-compressed.mp4" type="video/mp4">
+   </video>
+   <video controls muted playsinline preload="metadata" width="720">
+     <source src="https://raw.githubusercontent.com/RLinf/misc/main/pic/charger-compressed.mp4" type="video/mp4">
+   </video>
 
-.. raw:: html
+.. list-table::
+   :header-rows: 1
+   :widths: 38 62
 
-  <div style="flex: 1; text-align: center;">
-    <video controls autoplay loop muted playsinline preload="metadata" width="720">
-      <source src="https://raw.githubusercontent.com/RLinf/misc/main/pic/peg-insertion-compressed.mp4" type="video/mp4">
-      Your browser does not support the video tag.
-    </video>
-    <p><em>Peg Insertion</em></p>
-  </div>
-
-.. raw:: html
-
-  <div style="flex: 1; text-align: center;">
-    <video controls autoplay loop muted playsinline preload="metadata" width="720">
-      <source src="https://raw.githubusercontent.com/RLinf/misc/main/pic/charger-compressed.mp4" type="video/mp4">
-      Your browser does not support the video tag.
-    </video>
-    <p><em>Charger</em></p>
-  </div>
+   * - Symptom
+     - Fix
+   * - ``torch.cuda.is_available()`` prints ``False``
+     - Verify ``nvidia-smi`` works under the running kernel (rebuild the NVIDIA module with ``IGNORE_PREEMPT_RT_PRESENCE=1`` on PREEMPT_RT), then re-run ``requirements/install.sh``.
+   * - ``Running kernel does not have realtime capabilities``
+     - Boot the PREEMPT_RT kernel, or use Franky's default ``realtime_config: ignore``.
+   * - Incompatible libfranka version error
+     - Match ``LIBFRANKA_VERSION`` (0.19.0 or 0.15.0) to the Franka Desk ``Control`` firmware version using the Franka compatibility table.
+   * - ``communication_constraints_violation`` reflex
+     - Heavy training load on a standard kernel missed 1 kHz deadlines; switch to a PREEMPT_RT kernel or move robot control to a dedicated controller node.
+   * - Franky impedance controller stops unexpectedly
+     - RLinf reports the motion error and halts safely. Resolve the physical or reflex cause before restarting training (in direct Python scripts, disconnect and reconnect; clearing errors alone does not resume tracking).

@@ -26,6 +26,7 @@ import os
 import torch
 from omegaconf import DictConfig
 
+from rlinf.models.embodiment.qwen_vl.linear_patch_embed import patch_vision_patch_embed
 from rlinf.utils.logging import get_logger
 
 from .starvla_action_model import StarVLAForRLActionPrediction
@@ -82,12 +83,21 @@ def get_model(
         ) from e
 
     starvla_model = baseframework.from_pretrained(ckpt_path)
+    # Qwen-VL PatchEmbed is Conv3d; Ascend filter backward requires 5D NCDHW
+    # and ROCm segfaults on the same kernel. Matmul is exact when kernel==stride.
+    patch_vision_patch_embed(starvla_model)
 
     # Check early whether the loaded model provides a compatible interface.
     resolve_vlm_interface(starvla_model)
 
     # 'framework_name' is optional but helps infer the expected wiring for some checkpoints.
     starvla_cfg = getattr(cfg, "starvla", None)
+    if getattr(starvla_cfg, "enable_npu_attention", False):
+        from rlinf.models.embodiment.qwen_vl.npu_attention import (
+            enable_qwen_vl_npu_attention,
+        )
+
+        enable_qwen_vl_npu_attention(resolve_vlm_interface(starvla_model).model)
     framework_name = getattr(starvla_cfg, "framework_name", None)
     if framework_name is not None:
         framework_name = str(framework_name).strip()

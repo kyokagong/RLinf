@@ -241,16 +241,17 @@ arrives without editing anything that selects one.
 
 Arms are where this matters most, because two of them drive the same hardware.
 A Franka is reached through libfranka or through ROS, so both register on
-``Arm`` and a robot names one:
+``Arm`` and a robot names one. ``FrankaRobot`` names Franky, and a subclass that
+wanted the ROS stack would override only the name:
 
 .. code-block:: python
 
    class FrankaRobot(Robot):
-       BACKEND = "franka_ros"
-
-
-   class DualFrankaRobot(FrankaRobot):
        BACKEND = "franky"
+
+
+   class FrankaRosRobot(FrankaRobot):  # hypothetical
+       BACKEND = "franka_ros"
 
 Naming the backend is the whole of the swap. Each backend maps the standard arm
 settings onto its own constructor in its own ``declare()``, next to the
@@ -340,7 +341,7 @@ The command uses the driver's action width; the returned ``positions`` array
 uses its state width. ``disconnect()`` releases both parts, including when a
 command fails. To use this variant in a Franka task, import its module before
 environment construction and set the hardware entry's ``end_effector_type`` to
-``gentle_tool`` and ``end_effector_config.port`` to its serial port. The task's
+``"gentle_tool"`` and ``end_effector_config.port`` to its serial port. The task's
 hand reset and target arrays must match the driver's dimensions. Placing the
 part remotely keeps the same state and command interface.
 
@@ -705,7 +706,7 @@ device families, remote placement, robot composition, and discovery.
        them: Franky, Franka ROS, GimArm, SO-101, Piper, and the coupled
        controllers.
    * - ``robotics/parts/cameras/``
-     - Camera lifecycle and RealSense, ZED, and Lumos implementations.
+     - Camera lifecycle and RealSense, ZED, Lumos, and Orbbec implementations.
    * - ``robotics/parts/end_effectors/``
      - Grippers and dexterous hands.
    * - ``robotics/parts/mobility/``

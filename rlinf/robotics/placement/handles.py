@@ -43,6 +43,7 @@ _STAYS_LOCAL: frozenset[str] = frozenset(
         "parts",
         "children",
         "child",
+        "batch_commands",
     }
 )
 
@@ -213,6 +214,7 @@ class PartWorkerHost:
             name: func
             for name, func in inspect.getmembers(part_cls, inspect.isfunction)
             if not name.startswith("_")
+            and not isinstance(inspect.getattr_static(part_cls, name), staticmethod)
         }
         _refuse_collisions(part_cls, methods)
         namespace.update(methods)

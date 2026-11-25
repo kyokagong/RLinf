@@ -27,6 +27,7 @@ class SupportedEnvType(Enum):
     MANISKILL_RLT = "maniskill_rlt"
     LIBERO = "libero"
     ROBOTWIN = "robotwin"
+    ROBODOJO = "robodojo"
     ISAACLAB = "isaaclab"
     METAWORLD = "metaworld"
     BEHAVIOR = "behavior"
@@ -36,21 +37,27 @@ class SupportedEnvType(Enum):
     REAL = "real"
     FRANKASIM = "frankasim"
     HABITAT = "habitat"
-    OPENSORAWM = "opensora_wm"
-    WANWM = "wan_wm"
+    WORLD_MODEL = "world_model"
     GENESIS = "genesis"
     EMBODICHAIN = "embodichain"
     ROBOVERSE = "roboverse"
+    GENIESIM = "geniesim"
     D4RL = "d4rl"
+    MUJOCO_WARP = "mujoco_warp"
     DIFFUSION = "diffusion"
     POLARIS = "polaris"
+    DEXJOCO = "dexjoco"
+    ROBOLAB = "robolab"
+    SIMPLE = "simple"
 
     @classmethod
     def _missing_(cls, value: object) -> "SupportedEnvType | None":
         """Accept the spellings this enum used to have.
 
         The real-world package was ``envs/realworld`` and is now ``envs/real``;
-        configs that named the old one keep working and say so.
+        world-model backend names (and their retired ``env_type`` spellings)
+        resolve to ``world_model``. Configs that named the old values keep
+        working and say so.
         """
         if value == "realworld":
             warnings.warn(
@@ -59,6 +66,16 @@ class SupportedEnvType(Enum):
                 stacklevel=2,
             )
             return cls.REAL
+        from rlinf.envs.sim.world_model.registry import get_backend_name
+
+        backend = get_backend_name(value)
+        if backend is not None:
+            warnings.warn(
+                f"env_type {value!r} is retired. Use 'world_model' with backend: {backend}.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return cls.WORLD_MODEL
         return None
 
 
@@ -99,6 +116,10 @@ def get_env_cls(env_type: str, env_cfg=None):
         from rlinf.envs.sim.robotwin.robotwin_env import RoboTwinEnv
 
         return RoboTwinEnv
+    elif env_type == SupportedEnvType.ROBODOJO:
+        from rlinf.envs.sim.robodojo.robodojo_env import RoboDojoEnv
+
+        return RoboDojoEnv
     elif env_type == SupportedEnvType.ISAACLAB:
         from rlinf.envs.sim.isaaclab import REGISTER_ISAACLAB_ENVS
 
@@ -138,6 +159,10 @@ def get_env_cls(env_type: str, env_cfg=None):
         from rlinf.envs.real import RealWorldEnv
 
         return RealWorldEnv
+    elif env_type == SupportedEnvType.WORLD_MODEL:
+        from rlinf.envs.sim.world_model import WorldModelEnv
+
+        return WorldModelEnv
     elif env_type == SupportedEnvType.HABITAT:
         from rlinf.envs.sim.habitat.habitat_env import HabitatEnv
 
@@ -150,14 +175,6 @@ def get_env_cls(env_type: str, env_cfg=None):
         from rlinf.envs.sim.genesis.genesis_env import GenesisEnv
 
         return GenesisEnv
-    elif env_type == SupportedEnvType.OPENSORAWM:
-        from rlinf.envs.sim.world_model.world_model_opensora_env import OpenSoraEnv
-
-        return OpenSoraEnv
-    elif env_type == SupportedEnvType.WANWM:
-        from rlinf.envs.sim.world_model.world_model_wan_env import WanEnv
-
-        return WanEnv
     elif env_type == SupportedEnvType.EMBODICHAIN:
         from rlinf.envs.sim.embodichain.embodichain_env import EmbodiChainEnv
 
@@ -166,17 +183,37 @@ def get_env_cls(env_type: str, env_cfg=None):
         from rlinf.envs.sim.roboverse.roboverse_env import RoboVerseEnv
 
         return RoboVerseEnv
+    elif env_type == SupportedEnvType.GENIESIM:
+        from rlinf.envs.sim.geniesim.geniesim_env import GenieSimEnv
+
+        return GenieSimEnv
     elif env_type == SupportedEnvType.D4RL:
         from rlinf.envs.sim.d4rl.d4rl_env import D4RLEnv
 
         return D4RLEnv
+    elif env_type == SupportedEnvType.MUJOCO_WARP:
+        from rlinf.envs.sim.mujoco_warp.mujoco_warp_env import MujocoWarpEnv
+
+        return MujocoWarpEnv
     elif env_type == SupportedEnvType.DIFFUSION:
-        from rlinf.envs.sim.diffusion import GenerationEnv
+        from rlinf.envs.sim.diffusion.generation_env import GenerationEnv
 
         return GenerationEnv
     elif env_type == SupportedEnvType.POLARIS:
         from rlinf.envs.sim.polaris.polaris_env import PolarisEnv
 
         return PolarisEnv
+    elif env_type == SupportedEnvType.DEXJOCO:
+        from rlinf.envs.sim.dexjoco.dexjoco_env import DexJoCoEnv
+
+        return DexJoCoEnv
+    elif env_type == SupportedEnvType.ROBOLAB:
+        from rlinf.envs.sim.robolab.robolab_env import RoboLabEnv
+
+        return RoboLabEnv
+    elif env_type == SupportedEnvType.SIMPLE:
+        from rlinf.envs.sim.simple.simple_env import SimpleEnv
+
+        return SimpleEnv
     else:
         raise NotImplementedError(f"Environment type {env_type} not implemented")

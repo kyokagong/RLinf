@@ -14,11 +14,17 @@
 
 import logging
 from importlib.metadata import version
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Optional
 
 import torch
 from omegaconf import DictConfig
 from packaging.version import parse
+
+try:
+    from sglang.srt.constants import GPU_MEMORY_ALL_TYPES
+except ImportError:
+    # sglang 0.5.2/0.5.4 lack this symbol; these values are stable across versions.
+    GPU_MEMORY_ALL_TYPES = ["weights", "kv_cache", "cuda_graph"]
 from sglang.srt.managers.io_struct import (
     ReleaseMemoryOccupationReqInput,
     ResumeMemoryOccupationReqInput,
@@ -50,6 +56,21 @@ from .io_struct import (
 logger.setLevel(logging.WARNING)
 
 
+def patch_glm4_moe_lite_shared_expert_tp1():
+    """Backport the sglang fix for GLM-4.7-Flash's MoE block.
+
+    Up to 0.5.12.post1, Glm4MoeLiteSparseMoeBlock calls nn.Module.__init__ instead
+    of DeepseekV2MoE.__init__, so the inherited forward reads an unset
+    _shared_expert_tp1 and cuda graph capture fails. sglang main sets it to False.
+    """
+    try:
+        from sglang.srt.models.glm4_moe_lite import Glm4MoeLiteSparseMoeBlock
+    except ImportError:
+        return
+    if not hasattr(Glm4MoeLiteSparseMoeBlock, "_shared_expert_tp1"):
+        Glm4MoeLiteSparseMoeBlock._shared_expert_tp1 = False
+
+
 class Scheduler(_Scheduler):
     """
     Overridden class of SGLang's TP worker class _Scheduler.
@@ -57,6 +78,8 @@ class Scheduler(_Scheduler):
     """
 
     def __init__(self, *args, **kwargs):
+        # Must run before super().__init__, which builds the model.
+        patch_glm4_moe_lite_shared_expert_tp1()
         super().__init__(*args, **kwargs)
         # `TpModelWorkerClient` is used when ServerArgs.enable_overlap=True, and it has 'worker' attribute.
         # But in early SGLang version, `TpModelWorker` doesn't have 'worker' attribute.
@@ -76,6 +99,11 @@ class Scheduler(_Scheduler):
             self._request_dispatcher._mapping.extend(_extra_req_mapping)
 
         self.is_weight_offloaded = False
+        # Per-tag offload state: tag -> True when currently offloaded. A single
+        # boolean cannot express the partial state that the OOM-safe split
+        # resume needs, where weights are onloaded but kv and cuda_graph are
+        # not. is_weight_offloaded above still gates the sync path.
+        self.offloaded_tags: dict = dict.fromkeys(GPU_MEMORY_ALL_TYPES, False)
         self.weight_norm_dict = None
 
         try:
@@ -85,27 +113,58 @@ class Scheduler(_Scheduler):
         self.patch_return_output_ids = sglang_version < parse("0.5.0")
 
     def cuda_info(self, text: str = ""):
-        free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
+        free_gpu_memory, total_gpu_memory = Worker.torch_platform.mem_get_info()
         free_gpu_memory /= 2**30
         total_gpu_memory /= 2**30
 
-        memory_allocated = torch.cuda.memory_allocated() / 2**30
-        memory_reserved = torch.cuda.memory_reserved() / 2**30
+        memory_allocated = Worker.torch_platform.memory_allocated() / 2**30
+        memory_reserved = Worker.torch_platform.memory_reserved() / 2**30
 
         self._rlinf_worker.log_info(
-            f"[dp {self._rlinf_worker.get_parent_rank()}-tp {self.tp_rank}] {text} "
+            f"[dp {self._rlinf_worker.get_parent_rank()}-"
+            f"mi {self.model_instance_id}-tp {self.tp_rank}] {text} "
             f"{memory_allocated=:.2f} GiB, {memory_reserved=:.2f} GiB, "
             f"{free_gpu_memory=:.2f} GiB, {total_gpu_memory=:.2f} GiB"
         )
 
+    def resolve_memory_tags(self, recv_req):
+        """Resolve a release/resume request's tags to a concrete set.
+
+        sglang treats tags=None/[] as "all GPU memory types".
+        """
+        if recv_req.tags is None or len(recv_req.tags) == 0:
+            return set(GPU_MEMORY_ALL_TYPES)
+        return set(recv_req.tags)
+
     def release_memory_occupation(self, recv_req: ReleaseMemoryOccupationReqInput):
-        assert self.is_weight_offloaded is False, "Weight has been offloaded!"
-        self.is_weight_offloaded = True
-        return super().release_memory_occupation(recv_req)
+        requested_tags = self.resolve_memory_tags(recv_req)
+        already_offloaded = {
+            tag for tag in requested_tags if self.offloaded_tags.get(tag, False)
+        }
+        assert not already_offloaded, (
+            f"Cannot offload tags {sorted(requested_tags)}: "
+            f"{sorted(already_offloaded)} already offloaded. "
+            f"offload_state={self.offloaded_tags}"
+        )
+        for tag in requested_tags:
+            self.offloaded_tags[tag] = True
+        self.is_weight_offloaded = self.offloaded_tags.get("weights", False)
+        result = super().release_memory_occupation(recv_req)
+        return result
 
     def resume_memory_occupation(self, recv_req: ResumeMemoryOccupationReqInput):
-        assert self.is_weight_offloaded is True, "Weight has been onloaded!"
-        self.is_weight_offloaded = False
+        requested_tags = self.resolve_memory_tags(recv_req)
+        not_offloaded = {
+            tag for tag in requested_tags if not self.offloaded_tags.get(tag, False)
+        }
+        assert not not_offloaded, (
+            f"Cannot onload tags {sorted(requested_tags)}: "
+            f"{sorted(not_offloaded)} are not offloaded (already onloaded). "
+            f"offload_state={self.offloaded_tags}"
+        )
+        for tag in requested_tags:
+            self.offloaded_tags[tag] = False
+        self.is_weight_offloaded = self.offloaded_tags.get("weights", False)
         result = super().resume_memory_occupation(recv_req)
         if self.weight_reload == "cpu":
             model = self.tp_worker.worker.model_runner.model
@@ -165,7 +224,7 @@ class Scheduler(_Scheduler):
                 list_args = list(args)
                 # NOTE: the key is to change device id to the current device id
                 # in case two processes have different CUDA_VISIBLE_DEVICES
-                list_args[6] = torch.cuda.current_device()
+                list_args[6] = Worker.torch_platform.current_device()
                 new_weight = func(*list_args)
                 batch_weight.append((rename(name), new_weight))
         else:
@@ -186,6 +245,10 @@ class Scheduler(_Scheduler):
         use_cudagraph = not self.cfg.rollout.enforce_eager
         assert use_cudagraph, "use_cudagraph must be True now."
 
+        # Under overlap scheduling an already-launched batch may still be on
+        # the GPU when a pause leaves it unprocessed; wait before load_weights.
+        Worker.torch_platform.synchronize()
+
         state_dict = self._rlinf_worker.recv(
             src_group_name=self._actor_group_name,
             src_rank=self.actor_weight_rank,
@@ -200,10 +263,18 @@ class Scheduler(_Scheduler):
             # recv from the Megatron backend
             # Megatron use weight bucket to sync weight, the bucket length in dict of bucket 0, bucket_length
             state_dict.pop("bucket_length")
+            if isinstance(bucket_length, torch.Tensor):
+                bucket_length = bucket_length.item()
             assert bucket_length > 0, f"bucket_length {bucket_length} is invalid"
 
         if self.is_weight_offloaded:
-            self.resume_memory_occupation(ResumeMemoryOccupationReqInput())
+            # Resume model weights only. KV cache and cuda graph are deferred
+            # to onload_kv_cudagraph() in the runner, which runs after the
+            # actor offloads its model, so the two models are never both
+            # resident. Large MoE models OOM otherwise.
+            self.resume_memory_occupation(
+                ResumeMemoryOccupationReqInput(tags=["weights"])
+            )
 
         self.batch_load_hf_weight(state_dict)
         if bucket_length > 1:
@@ -236,12 +307,74 @@ class Scheduler(_Scheduler):
                 )
             else:
                 self._rlinf_worker.log_info(
-                    f"sglang: validate_weight success at rank {self._rlinf_worker.get_parent_rank()}"
+                    f"sglang: validate_weight success at dp rank "
+                    f"{self._rlinf_worker.get_parent_rank()}, "
+                    f"model instance id {self.model_instance_id}"
                 )
             self.weight_norm_dict = None
 
-        self.flush_cache()
+        self._handle_cache_after_sync(recv_req.pause_mode)
         return SyncHFWeightOutput()
+
+    def _handle_cache_after_sync(self, pause_mode: Optional[str]):
+        """Handle prefix tree / KV caches at the end of `sync_hf_weight`.
+
+        Not paused (synchronous training) or "drain": the engine is fully
+        idle, a normal flush must succeed. "in_place": in-flight requests
+        still need their KV, skip the flush. "retract": retracted requests
+        sit in the waiting queue holding no KV, so a forced flush is safe -
+        take the queue out so the idle check passes, flush, put it back.
+        """
+        if pause_mode in (None, "drain"):
+            success = self.flush_cache()
+            if success is False:
+                logger.warning(
+                    f"flush_cache after weight sync did not fully flush "
+                    f"(running={len(self.running_batch.reqs)}, "
+                    f"waiting={len(self.waiting_queue)}); "
+                    f"pause_mode={pause_mode!r}"
+                )
+            return
+
+        if pause_mode == "in_place":
+            return
+
+        # pause_mode == "retract": forced flush only when safe to do so.
+        preconditions = (
+            self.running_batch.is_empty(),
+            self.chunked_req is None,
+            not self.enable_overlap or len(self.result_queue) == 0,
+        )
+        if not all(preconditions):
+            reason = (
+                "running_batch not empty"
+                if not preconditions[0]
+                else "chunked_req pending"
+                if not preconditions[1]
+                else "overlap result queue not empty"
+            )
+            logger.warning(
+                f"retract forced flush skipped: {reason}; "
+                f"running={len(self.running_batch.reqs)}, "
+                f"waiting={len(self.waiting_queue)}"
+            )
+            return
+
+        saved_queue = self.waiting_queue
+        self.waiting_queue = []
+        try:
+            # Reuse sglang's own flush so the prefix tree and the KV
+            # allocator are cleared together; resetting only the tree would
+            # leak KV slots.
+            success = self.flush_cache()
+        finally:
+            self.waiting_queue = saved_queue
+        if success is False:
+            logger.warning(
+                f"retract forced flush after weight sync did not fully flush; "
+                f"running={len(self.running_batch.reqs)}, "
+                f"waiting={len(self.waiting_queue)}"
+            )
 
     def run_task_method(self, obj: TaskMethodInput):
         """
@@ -276,20 +409,32 @@ class Scheduler(_Scheduler):
         weight_reload: Literal["sync", "cpu", None] = "sync",
         placement: ModelParallelComponentPlacement = None,
         config: DictConfig = None,
+        model_instance_id: int | None = None,
     ):
         # WARNNING(wyq): Is world_size == self.tp_size when we enable EP in MoE?
         self._rlinf_worker = Worker(
             parent_address=parent_address, world_size=self.tp_size, rank=self.tp_rank
         )
+        # Explicit rather than get_parent_rank(): the parent is the entry
+        # process, whose rank differs from the instance id once an instance
+        # spans nodes. Both values are logged.
+        self.model_instance_id = model_instance_id
         self.weight_reload = weight_reload
         if weight_reload == "sync":
             self.cfg = config
             self._actor_group_name = self.cfg.actor.group_name
             self.placement_mode = placement.placement_mode
             self.rollout_sync_mode = placement._rollout_sync_mode
-            self.actor_weight_rank = RankMapper.get_rollout_rank_to_actor_rank_map(
-                placement
-            )[(self._rlinf_worker.get_parent_rank(), self._rlinf_worker._rank)]
+            rollout_rank_map = RankMapper.get_rollout_rank_to_actor_rank_map(placement)
+            # Rollout's transmission coordinates are (model_instance_id,
+            # rank_in_instance), independent of sglang's internal attention
+            # sharding coordinates. Each tp rank receives from its source actor
+            # rank directly.
+            rollout_key = (
+                self.model_instance_id,
+                self._rlinf_worker._rank,
+            )
+            self.actor_weight_rank = rollout_rank_map[rollout_key]
 
             use_presharded_weights = (
                 False if self.cfg.actor.training_backend == "fsdp" else True
@@ -311,7 +456,9 @@ class Scheduler(_Scheduler):
                 self.weight_norm_dict = validate_weight_init(model)
 
             self._rlinf_worker.log_info(
-                f"Running Scheduler dp rank {self._rlinf_worker.get_parent_rank()}, tp rank {self.tp_rank}, corresponding actor weight rank = {self.actor_weight_rank}"
+                f"Running Scheduler dp rank {self._rlinf_worker.get_parent_rank()}, "
+                f"model instance id {self.model_instance_id}, tp rank {self.tp_rank}, "
+                f"corresponding actor weight rank = {self.actor_weight_rank}"
             )
         elif weight_reload == "cpu":
             # save state dict to cpu
@@ -320,15 +467,19 @@ class Scheduler(_Scheduler):
             for key, value in model.state_dict().items():
                 cpu_state_dict[key] = value.to("cpu", non_blocking=True)
             self.cpu_state_dict = cpu_state_dict
-            torch.cuda.synchronize()
+            Worker.torch_platform.synchronize()
 
             self._rlinf_worker.log_info(
-                f"Running Scheduler dp rank {self._rlinf_worker.get_parent_rank()}, tp rank {self.tp_rank}, load weight from cpu"
+                f"Running Scheduler dp rank {self._rlinf_worker.get_parent_rank()}, "
+                f"model instance id {self.model_instance_id}, tp rank {self.tp_rank}, "
+                f"load weight from cpu"
             )
         elif weight_reload is None:
             # save state dict to cpu
             self._rlinf_worker.log_info(
-                f"Running Scheduler dp rank {self._rlinf_worker.get_parent_rank()}, tp rank {self.tp_rank}, no sync weight"
+                f"Running Scheduler dp rank {self._rlinf_worker.get_parent_rank()}, "
+                f"model instance id {self.model_instance_id}, tp rank {self.tp_rank}, "
+                f"no sync weight"
             )
 
     def get_scheduler_running_state(self):
@@ -348,15 +499,14 @@ class Scheduler(_Scheduler):
 
     # to return output_ids and response_text simaltaneously in sglang 0.4.x.
     # copied from srt/managers/scheduler.py (0.4.6) and only delete the condition outside the assignment of "output_ids"
-    def stream_output_generation(
-        self,
-        reqs,
-        return_logprob: bool,
-        skip_req=None,
-    ):
-        # for sglang 0.5.0 and later, we use the original _handle_batch_output
+    def stream_output_generation(self, reqs, return_logprob, skip_req=None, **kwargs):
+        # for sglang 0.5.0 and later, we use the original _handle_batch_output.
+        # Extra arguments differ by sglang version (0.5.12 adds is_idle_batch),
+        # so forward whatever arrives instead of naming them.
         if not self.patch_return_output_ids:
-            return super().stream_output_generation(reqs, return_logprob, skip_req)
+            return super().stream_output_generation(
+                reqs, return_logprob, skip_req, **kwargs
+            )
 
         from sglang.srt.managers.scheduler_output_processor_mixin import (
             DEFAULT_FORCE_STREAM_INTERVAL,
@@ -604,7 +754,7 @@ def validate_weight_init(model):
         weight_norm_dict[key] = posi_norm(value)
 
     # avoid release memory before norm kernel launch (gpu is async from cpu)
-    torch.cuda.synchronize()
+    Worker.torch_platform.synchronize()
     return weight_norm_dict
 
 

@@ -1,5 +1,5 @@
-机器人架构
-==========
+Robotics 内部架构
+=================
 
 本页说明机器人接口背后的实现机制：任务使用的零部件路径如何对应硬件 connection，多个零部件如何共用一条 connection，以及 placement 与生命周期如何保证每项物理资源只打开和释放一次。
 
@@ -150,16 +150,16 @@ Franka 属于另一种情况。它的末端执行器自行打开 session，因�
 
 直接调用构造函数时，解析出 class 已经足够。如果某类设备具有固定的配置结构，还可以提供构建入口：``Camera.of()`` 接收 ``CameraInfo`` 并从中读出 backend；``EndEffector.of()`` 接收名称，以及安装它的机械臂所能提供的接入方式；``Arm.declare()`` 把机器人层面的机械臂配置映射到某个 backend 自己的构造函数上。这些映射都写在驱动里、紧挨着它所服务的构造函数，因此新增一个 backend 不需要改动负责选择 backend 的代码。
 
-机械臂尤其适合采用这套机制，因为同一套硬件可能支持多种 backend。Franka 可以通过 libfranka 或 ROS 控制，因此两种实现都注册到 ``Arm``，机器人只需指定其中一种：
+机械臂尤其适合采用这套机制，因为同一套硬件可能支持多种 backend。Franka 可以通过 libfranka 或 ROS 控制，因此两种实现都注册到 ``Arm``，机器人只需指定其中一种。``FrankaRobot`` 指定的是 Franky；若某个子类需要使用 ROS，只需覆盖 backend 名称：
 
 .. code-block:: python
 
    class FrankaRobot(Robot):
-       BACKEND = "franka_ros"
-
-
-   class DualFrankaRobot(FrankaRobot):
        BACKEND = "franky"
+
+
+   class FrankaRosRobot(FrankaRobot):  # 假设的子类
+       BACKEND = "franka_ros"
 
 切换时只需修改 backend 名称。每个 backend 在自己的 ``declare()`` 中，将标准机械臂配置映射到相应构造函数；机器人无需了解某套实现启动 ROS package，而另一套实现打开 libfranka session。机械臂只接受机械臂自身的配置：向 ``declare()`` 传入 ``gripper_type`` 会被直接拒绝，而不是静默丢弃，因为这类配置属于与它并列组合的末端执行器。
 
@@ -206,7 +206,7 @@ driver 还提供 ``action_dim`` 和 ``state_dim``。独立连接的注册 driver
    finally:
        robot.disconnect()
 
-``build()`` 声明两个零部件，``connect()`` 打开各自的连接。命令向量采用 driver 的动作维度，返回的 ``positions`` 数组采用其状态维度。``disconnect()`` 释放两个零部件，命令失败时也会执行。要在 Franka 任务中使用这个变体，请在构造环境前导入它所在的模块，将硬件条目的 ``end_effector_type`` 设为 ``gentle_tool``，并在 ``end_effector_config.port`` 中填写串口路径。任务中的手部复位和目标数组需要匹配 driver 的维度。将零部件放到远程节点时，状态和命令接口保持一致。
+``build()`` 声明两个零部件，``connect()`` 打开各自的连接。命令向量采用 driver 的动作维度，返回的 ``positions`` 数组采用其状态维度。``disconnect()`` 释放两个零部件，命令失败时也会执行。要在 Franka 任务中使用这个变体，请在构造环境前导入它所在的模块，将硬件条目的 ``end_effector_type`` 设为 ``"gentle_tool"``，并在 ``end_effector_config.port`` 中填写串口路径。任务中的手部复位和目标数组需要匹配 driver 的维度。将零部件放到远程节点时，状态和命令接口保持一致。
 
 控制器检查工具从 ``EndEffector.backends()`` 获取可选名称。通过 ``--end-effector-config`` 传入 JSON object 格式的 driver 参数；省略的值采用 driver 自身的默认值。
 
@@ -426,7 +426,7 @@ driver 应实现 ``_open()`` 与 ``_release()``，不要覆盖 ``connect()`` 和
    * - ``robotics/parts/arms/``
      - ``Arm`` 类别与 ``BaseArm``，以及注册到它们之上的各个 backend：Franky、Franka ROS、GimArm、SO-101、Piper 和联动控制器。
    * - ``robotics/parts/cameras/``
-     - 相机生命周期，以及 RealSense、ZED 和 Lumos 实现。
+     - 相机生命周期，以及 RealSense、ZED、Lumos 和 Orbbec 实现。
    * - ``robotics/parts/end_effectors/``
      - 夹爪和灵巧手。
    * - ``robotics/parts/mobility/``

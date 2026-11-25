@@ -154,7 +154,13 @@ class SGLangEmbodiedWorker(Worker):
             else:
                 merged[key] = values
         reset = any(b.get("final_obs") is not None for b in obs_batches)
-        return {"obs": merged, "reset": reset}
+        return {
+            "obs": merged,
+            "reset": reset,
+            "eval_epoch_done": any(
+                bool(batch.get("eval_epoch_done")) for batch in obs_batches
+            ),
+        }
 
     def predict(
         self, env_obs: dict[str, Any], mode: Literal["train", "eval"] = "eval"
@@ -163,7 +169,29 @@ class SGLangEmbodiedWorker(Worker):
 
         Owns the sglang HTTP round-trip: the adapter builds the request
         payload and parses the response; this worker performs the msgpack POST.
+        Adapters with ``request_groups`` get one request per env group.
         """
+        from rlinf.models.embodiment.sglang_adapter import (
+            gather_env_rows,
+            select_env_rows,
+        )
+
+        request_groups = getattr(self.sglang_adapter, "request_groups", None)
+        groups = request_groups(env_obs) if request_groups is not None else None
+        if groups is None or len(groups) <= 1:
+            return self._request_actions(env_obs, mode)
+        outputs = [
+            self._request_actions(select_env_rows(env_obs, group), mode)
+            for group in groups
+        ]
+        order = [index for group in groups for index in group]
+        actions = gather_env_rows([actions for actions, _ in outputs], order)
+        info = gather_env_rows([info for _, info in outputs], order)
+        return actions, info
+
+    def _request_actions(
+        self, env_obs: dict[str, Any], mode: Literal["train", "eval"]
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
         adapter = self.sglang_adapter
         payload, state = adapter.build_request(env_obs, mode=mode)
         resp = self.http_client.post(
@@ -185,6 +213,7 @@ class SGLangEmbodiedWorker(Worker):
             desc="Evaluating Rollout Epochs",
             disable=(self._rank != 0),
         ):
+            eval_epoch_done = False
             for _ in range(self.n_eval_chunk_steps):
                 for stage_id in range(self.num_pipeline_stages):
                     env_output = await self.recv_from(
@@ -197,6 +226,9 @@ class SGLangEmbodiedWorker(Worker):
                         merge_fn=self._merge_obs_batches,
                         infer_batch_size_fn=self._infer_env_batch_size,
                     ).async_wait()
+                    if env_output.get("eval_epoch_done"):
+                        eval_epoch_done = True
+                        break
                     obs = {
                         **env_output["obs"],
                         "_rlinf_stage_id": stage_id,
@@ -214,3 +246,6 @@ class SGLangEmbodiedWorker(Worker):
                         async_op=True,
                         batch_size=self.eval_batch_size,
                     )
+
+                if eval_epoch_done:
+                    break

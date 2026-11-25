@@ -1,11 +1,26 @@
-Adding a Robot
-==============
+Real-World Hardware
+===================
 
 This guide adds a mobile base, composes it with RLinf's existing Franka arm, and
 drives the resulting mobile manipulator through a real-world Gymnasium
 environment. By the end, the base will have a registered backend, a declared
 observation and action contract, a reusable robot builder, cluster configuration,
-and tests that run before the physical platform moves.
+and verification checks that run before the physical platform moves.
+
+.. list-table:: At a Glance
+   :header-rows: 1
+   :widths: 26 74
+
+   * - Item
+     - Details
+   * - Extension point
+     - Hardware part driver (``MobileBase`` / ``RobotPart``) and composed ``Robot`` type
+   * - Registration APIs
+     - ``@MobileBase.register(...)``, ``Robot.register_type(RobotConfig)``
+   * - Config selector
+     - ``cluster.node_groups[].hardware.type``
+   * - Files touched
+     - ``rlinf/robotics/parts/``, ``rlinf/robotics/robots/``, ``tests/robot_mocks/``
 
 The work proceeds through four checkpoints. First, make one local part complete
 its own lifecycle and data exchange. Next, compose it with existing parts and use
@@ -157,7 +172,7 @@ Franka connection:
        **arm_parts,
    )
 
-The three declarations reach ``MobileManipulator`` in one form. Constructing
+The three declarations reach the mobile-manipulator class in one form. Constructing
 the mobile base returns an unconnected ``RobotPart``. ``build_arms()`` returns
 a dictionary with the standard keys ``arm`` and ``end_effector``; each value is
 an unconnected ``RobotPart``. Expanding that mapping passes both parts to the
@@ -241,28 +256,24 @@ branches that shared one would run in declaration order.
 --------------------------------------------
 
 Hardware code says how to move the base. Task code decides where to move it,
-when an episode succeeds, and which subset of the robot a policy controls. The
-following ``RobotTask`` exposes only the base even though the robot also carries
-an arm:
+when an episode succeeds, and which subset of the robot a policy controls. A
+task in RLinf is a small ``gymnasium.Env`` class in its robot's package,
+configured by a dataclass and registered under a Gymnasium ID;
+``rlinf/envs/real/franka/peg_insertion.py`` is the current example, and
+:doc:`New Real-World Tasks <new_task>` covers that workflow step by step.
+
+Whatever the task computes, it reaches the hardware through the composition from
+the previous step. An env that drives only the base reads and commands the
+``base`` branch, leaving the arm the robot also carries idle:
 
 .. code-block:: python
 
-   import gymnasium as gym
-
-   from rlinf.envs.real.task_env import RobotTask, RobotTaskEnv
-
-
-   class DriveToTarget(RobotTask):
-       def __init__(self, target_xy: np.ndarray):
-           self.target_xy = np.asarray(target_xy, dtype=np.float32)
-
-       @property
-       def description(self) -> str:
-           return "drive the mobile manipulator to the target"
-
-       @property
-       def observation_space(self) -> gym.Space:
-           return gym.spaces.Dict(
+   class DriveToTargetEnv(gym.Env):
+       def __init__(self, config: DriveToTargetConfig) -> None:
+           self.target_xy = np.asarray(config.target_xy, dtype=np.float32)
+           self.robot = Robot.of_type("MobileManipulator", **config.hardware)
+           self.robot.connect()
+           self.observation_space = gym.spaces.Dict(
                {
                    "base": gym.spaces.Dict(
                        {
@@ -273,10 +284,7 @@ an arm:
                    )
                }
            )
-
-       @property
-       def action_space(self) -> gym.Space:
-           return gym.spaces.Dict(
+           self.action_space = gym.spaces.Dict(
                {
                    "base": gym.spaces.Dict(
                        {
@@ -289,46 +297,34 @@ an arm:
                }
            )
 
-       @staticmethod
-       def observe(robot: Robot) -> dict:
-           return {"base": robot.get_observation()["base"]}
+       def _observe(self) -> dict:
+           return {"base": self.robot.get_observation()["base"]}
 
-       def reset(self, robot: Robot, *, seed=None, options=None):
-           del seed, options
-           robot.reset()
-           return self.observe(robot), {}
+       def reset(self, *, seed=None, options=None):
+           super().reset(seed=seed)
+           self.robot.reset()
+           return self._observe(), {}
 
-       def step(self, robot: Robot, action: dict):
-           robot.send_action(action)
-           observation = self.observe(robot)
+       def step(self, action: dict):
+           self.robot.send_action(action)
+           observation = self._observe()
            distance = float(
                np.linalg.norm(observation["base"]["pose"][:2] - self.target_xy)
            )
            reached = distance < 0.05
            return observation, float(reached), reached, False, {"distance": distance}
 
+       def close(self) -> None:
+           self.robot.disconnect()
 
-   env = RobotTaskEnv(robot, DriveToTarget(np.array([1.0, 0.0])))
-   try:
-       observation, info = env.reset()
-       observation, reward, terminated, truncated, info = env.step(
-           {"base": {"velocity": np.array([0.1, 0.0], dtype=np.float32)}}
-       )
-   finally:
-       env.close()
-
-Read the task in the order the environment calls it. ``observation_space`` and
-``action_space`` declare the policy boundary before an episode starts;
-``observe()`` then selects the matching ``base`` branch from the larger robot
-observation. ``reset()`` stops and resets the robot before returning the first
+Read the env in the order Gymnasium calls it. ``observation_space`` and
+``action_space`` declare the policy boundary before an episode starts, and
+``_observe()`` selects the matching ``base`` branch from the larger robot
+observation. ``reset()`` resets the robot before returning the first
 observation. On each step, ``step()`` sends the canonical action, reads the new
 pose, and derives reward, termination, and diagnostic information from the same
-state.
-
-``RobotTaskEnv(robot, task)`` joins these task rules to the composed runtime. It
-connects the robot during construction, forwards Gymnasium ``reset()`` and
-``step()`` to the task, and disconnects in ``close()``. A manipulation task can
-expand both spaces and the action dictionary with ``arm`` and
+state. ``close()`` disconnects what ``__init__`` connected. A manipulation task
+expands both spaces and the action dictionary with ``arm`` and
 ``end_effector``; the base driver and robot composition remain unchanged.
 
 To launch the task through RLinf's distributed ``RealWorldEnv``, register the
@@ -435,8 +431,8 @@ declaration rather than copying its SDK or lifecycle code:
            return cls(base=base, **arm_parts)
 
 The config and builder describe different parts of the same construction.
-``base_backend`` selects a registered mobile-base driver,
-``base_endpoint`` and ``arm_ip`` identify the two devices, and
+The base backend field selects a registered mobile-base driver,
+the base endpoint and arm IP fields identify the two devices, and
 ``controller_node_rank`` can place the arm away from the node that owns the
 robot record. ``worker_rank`` and ``env_idx`` identify the environment instance
 in generated worker names.
@@ -458,8 +454,8 @@ absorbed by ``**kwargs`` and silently ignored.
 .. warning::
 
    Call ``connect()`` before reading observations or sending commands, and
-   ``disconnect()`` during teardown. ``RobotTaskEnv`` performs both lifecycle
-   operations when it owns the robot.
+   ``disconnect()`` during teardown. The env that owns the robot performs both,
+   connecting when it is built and disconnecting in ``close()``.
 
 6. Register the Robot Type
 --------------------------
@@ -500,7 +496,7 @@ configured Python environment must be able to import the module.
 7. Configure the Cluster
 ------------------------
 
-Registration makes ``MobileManipulator`` resolvable; the cluster now supplies
+Registration makes the mobile-manipulator type resolvable; the cluster now supplies
 one physical instance and its placement. Hardware entries live under
 ``cluster.node_groups.hardware``. Each entry is parsed with the registered
 config class and becomes a ``RobotInfo`` during hardware discovery. Put
@@ -529,7 +525,7 @@ Python:
 The fields now follow the construction path above. ``type`` selects the
 registered robot; each item in ``configs`` creates one hardware record.
 ``node_rank`` identifies the node that owns that record,
-``base_backend`` and the two addresses identify its devices, and
+the base backend and the two device addresses identify its hardware, and
 ``controller_node_rank`` places the reused Franka connection on its controller
 node. The env config selects the Gym ID separately, so the same hardware
 composition can serve navigation, mobile manipulation, or data-collection
@@ -571,26 +567,24 @@ For the contract layer, add a minimal fake for the example SDK under
 ``tests/robot_mocks/`` and include it in ``sdk_modules()``. The fake needs
 only the device-side methods used above: ``get_pose()``, ``set_velocity()``,
 ``stop()``, and ``close()``. Registering it in one place makes the same fake
-available to unit tests, the bench checker, and remote mock workers.
+available to local contract checks, the bench checker, and remote mock workers.
 
-Then add a test under ``tests/unit_tests/`` beside the component you extended:
-a new part or robot belongs in ``test_robotics.py``, and the environment that
-drives it in ``test_real_env.py``. Cover the lifecycle the framework relies on
--- connect, reconnect, disconnect, and a disconnect that runs twice -- along
-with the observation names and shapes the part declares, and a connect that
-fails partway, which must leave no robot behind.
+Verify the connection lifecycle (connect, idempotent disconnect, observation
+names and shapes, and action handling) locally on CPU before running the
+full composition check:
 
-The rest of the integration is testable the same way. Cover the part contract,
-composition paths, connection lifecycle, discovery registration, and the schema
-policies expect:
+.. code-block:: python
 
-.. code-block:: bash
+   import numpy as np
 
-   pytest tests/unit_tests/test_robotics.py tests/unit_tests/test_real_env.py
-
-These exercise the scheduler import boundary, part composition, the task and
-robot split, and the policy-facing schema of every built-in real-world
-environment. None of it requires physical hardware.
+   base = ExampleMobileBase("tcp://mobile-base:7000")
+   base.connect()
+   obs = base.get_observation()
+   assert obs["pose"].shape == (3,)
+   applied = base.send_action({"velocity": np.array([0.1, 0.0], dtype=np.float32)})
+   assert applied["velocity"].shape == (2,)
+   base.disconnect()
+   base.disconnect()  # idempotent teardown
 
 Run It Against Faked SDKs
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -657,6 +651,8 @@ observation space and the runner all run as they would on a bench:
      - ``so101_mock_sac_mlp_reach``
    * - Piper
      - ``piper_mock_sac_mlp_reach``
+   * - Dual YAM
+     - ``realworld_dual_yam_collect_data_mock``
 
 Run It Against the Robot
 ~~~~~~~~~~~~~~~~~~~~~~~~
