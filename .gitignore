@@ -26,3 +26,4 @@ PKG-INFO
 *.egg-info/
 .claude/settings.json
 docs/berkerley-humainroid
+assets/
